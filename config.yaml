@@ -1,0 +1,21 @@
+# chuck-works config — the engine's own settings, owned by this repo.
+#
+# Migrated from milton's config.yaml subtree (#2450 seam 1): the scripts
+# used to resolve milton's repo-root config.yaml, which does not exist
+# here. chuck_send.py additionally swallowed ANY load failure into
+# hardcoded defaults, so a missing/broken config kept "working" by
+# coincidence — masked until the day these values change. Both scripts
+# now load THIS file fail-loud (no fallbacks, per the fleet rule).
+
+ssh_access:
+  hosts:
+    beelink:
+      ip: 192.168.1.84
+
+timers:
+  chuck_relay:
+    poll_interval: 5
+    boundary_interval: 4
+    channel: "#chuck-commands"
+    report_channel: "#chuck"
+    osc_port: 9000

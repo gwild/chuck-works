@@ -21,6 +21,15 @@ Endpoints:
   GET /api/state     -> the raw state JSON + a server-computed {_age_secs,_stale}
                         envelope (staleness is first-class: a frozen last-good
                         state must read RED, never green — #2464 design rule).
+  GET /api/compositions
+                    -> saved composition summaries from compositions/*.json
+  POST /api/transport/start
+                    -> call scripts/chuck_send.py --start
+  POST /api/compositions/<name>/recall
+                    -> call scripts/play_composition.py for that manifest
+
+Unsupported receiver controls return 501 until OSC support exists. The GUI must
+never fake stop/gain/mute success.
 
 The server is SCHEMA-AGNOSTIC: it serves whatever the collector wrote, plus
 the staleness envelope. The renderer (index.html) binds to the agreed schema
@@ -29,16 +38,29 @@ when the schema lands.
 """
 import json
 import os
+import re
+import subprocess
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = Path(__file__).resolve().parent
+REPO_ROOT = HERE.parent
 STATE_FILE = os.environ.get(
-    "STATE_FILE", os.path.join(HERE, os.pardir, "data", "jam-state.json")
+    "STATE_FILE", str(REPO_ROOT / "data" / "jam-state.json")
 )
+COMPOSITIONS_DIR = Path(os.environ.get("COMPOSITIONS_DIR", str(REPO_ROOT / "compositions")))
 PORT = int(os.environ.get("PORT", "8092"))
 TITLE = os.environ.get("TITLE", "chuck-works")
 STALE_SECS = float(os.environ.get("STALE_SECS", "30"))
+PYTHON = os.environ.get("PYTHON", sys.executable)
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def run_command(argv):
+    return subprocess.run(argv, cwd=str(REPO_ROOT), capture_output=True, text=True)
 
 
 def read_state():
@@ -57,6 +79,89 @@ def read_state():
     return state, age, age > STALE_SECS
 
 
+def read_json_body(handler, *, max_bytes=4096):
+    length = int(handler.headers.get("Content-Length") or "0")
+    if length > max_bytes:
+        raise ValueError(f"request body too large: {length} bytes")
+    if length == 0:
+        return {}
+    raw = handler.rfile.read(length).decode("utf-8")
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON body: {exc}") from exc
+    if not isinstance(body, dict):
+        raise ValueError("JSON body must be an object")
+    return body
+
+
+def composition_path(name):
+    if not NAME_RE.match(name):
+        raise ValueError("composition name must use only letters, numbers, dot, underscore, or hyphen")
+    path = COMPOSITIONS_DIR / f"{name}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"composition not found: {name}")
+    return path
+
+
+def load_composition_summary(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path.name}: unreadable manifest: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path.name}: manifest must be an object")
+    name = data.get("name") or path.stem
+    title = data.get("title") or name
+    transport = data.get("transport") or {}
+    if not isinstance(transport, dict):
+        raise ValueError(f"{path.name}: transport must be an object")
+    return {"name": name, "title": title, "transport": transport}
+
+
+def list_compositions():
+    items = []
+    for path in sorted(COMPOSITIONS_DIR.glob("*.json")):
+        items.append(load_composition_summary(path))
+    return {"compositions": items}
+
+
+def start_transport(body):
+    try:
+        bpm = float(body["bpm"])
+        bars = int(body["bars"])
+        countin = int(body.get("countin", 0))
+    except KeyError as exc:
+        raise ValueError(f"missing required field: {exc.args[0]}") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError("bpm must be numeric; bars/countin must be integers") from exc
+    if bpm <= 0 or bars <= 0 or countin < 0:
+        raise ValueError("bpm and bars must be > 0; countin must be >= 0")
+    result = run_command([
+        PYTHON,
+        str(REPO_ROOT / "scripts" / "chuck_send.py"),
+        "--start",
+        "--bpm", str(bpm),
+        "--bars", str(bars),
+        "--countin", str(countin),
+    ])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"chuck_send exited {result.returncode}")
+    return {"ok": True, "transport": {"bpm": bpm, "bars": bars, "countin": countin}, "stdout": result.stdout.strip()}
+
+
+def recall_composition(name):
+    path = composition_path(name)
+    result = run_command([
+        PYTHON,
+        str(REPO_ROOT / "scripts" / "play_composition.py"),
+        str(path),
+    ])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"play_composition exited {result.returncode}")
+    return {"ok": True, "name": name, "stdout": result.stdout.strip()}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -68,19 +173,64 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if self.path.split("?")[0] == "/api/state":
+        path = self.path.split("?")[0]
+        if path == "/api/state":
             state, age, stale = read_state()
             envelope = dict(state)
             envelope["_age_secs"] = round(age, 1) if age is not None else None
             envelope["_stale"] = stale
             self._send(200, json.dumps(envelope), "application/json")
             return
-        if self.path == "/" or self.path.split("?")[0] == "/index.html":
+        if path in ("/api/compositions", "/api/compositions/"):
             try:
-                with open(os.path.join(HERE, "index.html"), "rb") as f:
+                self._send(200, json.dumps(list_compositions()), "application/json")
+            except ValueError as exc:
+                self._send(500, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            return
+        if path == "/" or path == "/index.html":
+            try:
+                with open(HERE / "index.html", "rb") as f:
                     self._send(200, f.read(), "text/html; charset=utf-8")
             except OSError as exc:
                 self._send(500, f"index.html missing: {exc}", "text/plain")
+            return
+        if path.startswith("/api/"):
+            self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
+            return
+        self._send(404, "not found", "text/plain")
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        try:
+            if path == "/api/transport/start":
+                self._send(200, json.dumps(start_transport(read_json_body(self))), "application/json")
+                return
+            if path == "/api/transport/stop":
+                self._send(501, json.dumps({"ok": False, "error": "receiver has no /stop OSC handler yet"}), "application/json")
+                return
+            if path == "/api/gain/master":
+                self._send(501, json.dumps({"ok": False, "error": "receiver has no /master_gain OSC handler yet"}), "application/json")
+                return
+            if path.startswith("/api/lanes/") and (path.endswith("/mute") or path.endswith("/gain")):
+                self._send(501, json.dumps({"ok": False, "error": "receiver has no per-lane mute/gain OSC handlers yet"}), "application/json")
+                return
+            prefix = "/api/compositions/"
+            suffix = "/recall"
+            if path.startswith(prefix) and path.endswith(suffix):
+                name = unquote(path[len(prefix):-len(suffix)])
+                self._send(200, json.dumps(recall_composition(name)), "application/json")
+                return
+        except FileNotFoundError as exc:
+            self._send(404, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            return
+        except ValueError as exc:
+            self._send(400, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            return
+        except RuntimeError as exc:
+            self._send(500, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            return
+        if path.startswith("/api/"):
+            self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
             return
         self._send(404, "not found", "text/plain")
 

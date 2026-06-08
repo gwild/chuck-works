@@ -53,6 +53,34 @@ curl -fsS http://127.0.0.1:8092/api/state
 curl -fsS http://127.0.0.1:8092/
 ```
 
+## Control API
+
+The dashboard is still a reader for observability state, but the GUI now exposes
+a narrow control proxy that calls the existing chuck-works sender/player scripts.
+The receiver wire protocol remains owned by `scripts/chuck_send.py` and
+`scripts/play_composition.py`; the dashboard does not reimplement OSC packing.
+
+Works today:
+
+```
+GET  /api/compositions
+POST /api/transport/start              {"bpm": 172, "bars": 8, "countin": 0}
+POST /api/compositions/<name>/recall   {}
+```
+
+The first pass intentionally returns loud `501` responses for controls the live
+receiver cannot honor yet:
+
+```
+POST /api/transport/stop
+POST /api/gain/master
+POST /api/lanes/<agent>/mute
+POST /api/lanes/<agent>/gain
+```
+
+Those endpoints should stay fail-loud until receiver OSC support lands
+(`/stop`, `/master_gain`, per-lane mute/gain). Do not fake success in the GUI.
+
 ## Tests
 
 ```

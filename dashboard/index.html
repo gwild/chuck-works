@@ -136,16 +136,31 @@ async function postJSON(url, body){
     body:JSON.stringify(body||{}),
     cache:'no-store'
   });
-  const payload = await r.json().catch(() => ({ok:false,error:'non-JSON response'}));
+  const payload = await readJSONResponse(r);
   if(!r.ok || payload.ok===false) throw new Error(payload.error || ('HTTP '+r.status));
   return payload;
+}
+
+async function getJSON(url){
+  const r = await fetch(url,{cache:'no-store'});
+  const payload = await readJSONResponse(r);
+  if(!r.ok || payload.ok===false) throw new Error(payload.error || ('HTTP '+r.status));
+  return payload;
+}
+
+async function readJSONResponse(response){
+  const text = await response.text();
+  try{
+    return text ? JSON.parse(text) : {};
+  }catch(_e){
+    return {ok:false,error:'HTTP '+response.status+': '+(text || 'non-JSON response')};
+  }
 }
 
 async function loadCompositions(){
   const select = document.getElementById('compositions');
   try{
-    const r = await fetch('/api/compositions',{cache:'no-store'});
-    const payload = await r.json();
+    const payload = await getJSON('/api/compositions');
     const items = payload.compositions || [];
     select.innerHTML = items.length ? items.map(c => {
       const t = c.transport || {};

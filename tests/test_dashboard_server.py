@@ -186,6 +186,25 @@ class DashboardServerTest(unittest.TestCase):
             httpd.server_close()
         self.assertEqual(ctx.exception.code, 501)
 
+    def test_unknown_api_get_returns_json_404(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/nope", timeout=5)
+            body = ctx.exception.read().decode("utf-8")
+            ctype = ctx.exception.headers.get("Content-Type")
+            ctx.exception.close()
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+        self.assertEqual(ctx.exception.code, 404)
+        self.assertEqual(ctype, "application/json")
+        self.assertEqual(json.loads(body)["error"], "not found")
+
 
 if __name__ == "__main__":
     unittest.main()

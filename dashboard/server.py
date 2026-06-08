@@ -194,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as exc:
                 self._send(500, f"index.html missing: {exc}", "text/plain")
             return
+        if path.startswith("/api/"):
+            self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
+            return
         self._send(404, "not found", "text/plain")
 
     def do_POST(self):
@@ -225,6 +228,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         except RuntimeError as exc:
             self._send(500, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            return
+        if path.startswith("/api/"):
+            self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
             return
         self._send(404, "not found", "text/plain")
 

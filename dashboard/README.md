@@ -25,13 +25,39 @@ side per lane**: every silence/bleep this week lived in that gap (receiver
 ## Run
 
 ```
-STATE_FILE=/home/gregory/milton-services/data/jam-state.json PORT=8090 ./server.py
+STATE_FILE=/home/gregory/milton-services/data/jam-state.json PORT=8092 ./server.py
 ```
 
 `server.py` is stdlib-only (no flask/fastapi) and **schema-agnostic** — it
 serves whatever JSON the collector writes, plus a staleness envelope
 (`_age_secs`, `_stale`). Staleness is first-class RED: a frozen last-good state
 reads RED, never green (the "jam-monitor went dark and nobody noticed" fix).
+
+## Beelink service
+
+Install the user service on beelink from the live `~/chuck-works` checkout:
+
+```
+mkdir -p ~/.config/systemd/user
+ln -sf ~/chuck-works/dashboard/chuck-dashboard.service ~/.config/systemd/user/chuck-dashboard.service
+systemctl --user daemon-reload
+systemctl --user enable --now chuck-dashboard.service
+```
+
+The service runs `dashboard/run_dashboard.sh`, reads
+`~/milton-services/data/jam-state.json`, and serves the GUI on port 8092.
+Verify the live data path with:
+
+```
+curl -fsS http://127.0.0.1:8092/api/state
+curl -fsS http://127.0.0.1:8092/
+```
+
+## Tests
+
+```
+python3 -m unittest discover -s tests
+```
 
 ## Reuse for riddim
 

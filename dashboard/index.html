@@ -67,7 +67,7 @@ function render(s){
     '<span class="'+(it.transport_running?'ok':'dead')+'">'+(it.transport_running?'RUNNING':'STOPPED')+'</span>'+
     '  ·  bpm '+(it.bpm!=null?it.bpm:'?')+'  ·  bars '+(it.bars!=null?it.bars:'?')+
     (it.cycle_secs!=null?('  ·  cycle '+it.cycle_secs+'s'):'')+
-    (it.last_phrase_age_secs!=null?('  ·  last /load '+it.last_phrase_age_secs+'s ago'):'');
+    (it.last_phrase_age_secs!=null?('  ·  last phrase '+it.last_phrase_age_secs+'s ago'):'');
 
   // the 3-tap chain: receiver/JACK (pre-mix) → gmixer (mix) → icecast mount.
   // the delta between taps localizes the dead layer (source-thin vs mix-broken vs mount-silent).

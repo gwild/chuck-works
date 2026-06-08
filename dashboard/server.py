@@ -10,7 +10,7 @@ is an env var — point STATE_FILE at riddim's state file, set PORT/TITLE, and
 the same server+page serve a riddim dashboard with zero code change.
 
   STATE_FILE   path to the collector's JSON state    (default: ../data/jam-state.json)
-  PORT         http port                              (default: 8090)
+  PORT         http port                              (default: 8092)
   TITLE        page title                             (default: "chuck-works")
   STALE_SECS   age (s) past which state is RED        (default: 30)
 
@@ -36,7 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.environ.get(
     "STATE_FILE", os.path.join(HERE, os.pardir, "data", "jam-state.json")
 )
-PORT = int(os.environ.get("PORT", "8090"))
+PORT = int(os.environ.get("PORT", "8092"))
 TITLE = os.environ.get("TITLE", "chuck-works")
 STALE_SECS = float(os.environ.get("STALE_SECS", "30"))
 

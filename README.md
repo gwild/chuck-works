@@ -14,6 +14,13 @@ per #2450.
   - `chuck_relay.py` — relay.
   - `jam_stream.py` — the `/jam.mp3` streamer (ChucK JACK → icecast; self-reads the icecast
     source password, self-wires `ChucK:outport 0/1 → gststream`).
+  - `jam_collector.py` — observability collector (#2464): one supervised writer that joins
+    receiver INTENT (transport/bpm/bars/roster, cycle-scoped) against decoded REALITY at 3
+    taps (JACK pre-encode → gmixer output → icecast mount, each with a ~60s rolling ring) and
+    writes a single `data/jam-state.json`. Readers (the dashboard, watchdog) only consume that
+    file. Run it under `jam-collector.service` (supervised; NOT a oneshot+timer).
+  - `jam-collector.service` — systemd --user unit for the collector (Type=simple,
+    Restart=always).
 - `docs/chuck-bringup.md` — bring-up + recovery runbook and the live-learned engine constraints
   (revision guard, roster cap, `/start`-vs-cycle-boundary, gststream relaunch-on-bounce, etc.).
 - `compositions/` — scores & phrase sets. Agents: add yours here.

@@ -1,0 +1,19 @@
+[Unit]
+Description=Chuck jam observability collector (#2464) — joins receiver intent vs decoded reality -> jam-state.json
+After=default.target
+
+# Supervised daemon, NOT a oneshot + timer. The old 3-min jam_monitor timer
+# "went dark" twice when chat-post swallowed errors into exit 0, so a dead
+# collector looked alive. Here Type=simple + Restart=always means a crash is
+# visible and auto-recovered, and the single jam-state.json writer can't
+# silently stop. Install: systemctl --user enable --now jam-collector.service
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/milton-services/scripts/jam_collector.py
+Restart=always
+RestartSec=5
+Environment=STATE_FILE=%h/milton-services/data/jam-state.json
+Environment=JAM_INTERVAL=10
+
+[Install]
+WantedBy=default.target

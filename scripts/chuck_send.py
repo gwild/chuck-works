@@ -18,13 +18,13 @@ import os
 import yaml
 
 # ── Config (all from this repo's config.yaml, no fallbacks) ─────────
-# Fail-loud on purpose, same pattern as chuck_relay.py. The old form
-# swallowed ANY load failure into hardcoded IP/port — after the #2450
-# migration there was no config.yaml at the resolved path at all, so
-# every invocation silently ran on constants that merely happened to
-# match reality. "Sent" prints whether or not the datagram goes
-# anywhere useful (engine constraint 7), so a wrong default here is
-# undetectable from the sender. A missing or broken config must stop
+# Fail-loud on purpose, same pattern as chuck_relay.py (chuck-works #1).
+# The old form swallowed ANY load failure into a hardcoded IP/port — after
+# the #2450 migration there is no config.yaml at the resolved path unless
+# this repo owns it, so every invocation would silently run on constants
+# that merely happened to match reality. "Sent" prints whether or not the
+# datagram goes anywhere useful (engine constraint 7), so a wrong default
+# here is undetectable from the sender. A missing/broken config must STOP
 # the send, not improvise one.
 _cfg_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
 try:
@@ -106,6 +106,13 @@ def send_osc(message, host=BEELINK_IP, port=OSC_PORT):
     sock.close()
 
 
+def build_pan_message(agent, pos):
+    """Build /pan agent(s) pos(f) — per-agent stereo override, -1..+1.
+    The receiver clamps; agents never /pan'd keep the pitch-formula
+    default (which only spans ±0.3 — /pan is how you reach the sides)."""
+    return osc_string("/pan") + osc_string(",sf") + osc_string(agent) + struct.pack(">f", float(pos))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Send ChucK OSC messages to beelink")
     parser.add_argument("--agent", help="Agent name (e.g. claude)")
@@ -118,7 +125,25 @@ def main():
     parser.add_argument("--countin", type=int, default=0, help="Count-in ticks")
     parser.add_argument("--host", default=BEELINK_IP, help="Beelink IP")
     parser.add_argument("--port", type=int, default=OSC_PORT, help="OSC port")
+    parser.add_argument("--pan", type=float, default=None,
+                        help="Send /pan for --agent: stereo position -1..+1 "
+                             "(hand-rolled OSC was the only path before)")
     args = parser.parse_args()
+
+    if args.pan is not None:
+        if not args.agent:
+            print("--pan requires --agent", file=sys.stderr)
+            sys.exit(1)
+        if args.start:
+            print("--pan cannot combine with --start (pan is per-agent, "
+                  "transport is global) — send them separately", file=sys.stderr)
+            sys.exit(1)
+        send_osc(build_pan_message(args.agent, args.pan), args.host, args.port)
+        print(f"Sent /pan: agent={args.agent} pos={args.pan}")
+        # Deliberately NO return: --pan combined with --notes sends BOTH
+        # (/pan then /load) — the early-return here silently discarded the
+        # /load, a silent drop in the very PR documenting silent drops
+        # (Robby's #2444 review).
 
     if args.start:
         msg = build_start_message(args.bpm, TICKS_PER_BEAT, args.bars, args.countin)
@@ -129,6 +154,8 @@ def main():
         msg = build_load_message(args.agent, args.instrument, args.revision, notes)
         send_osc(msg, args.host, args.port)
         print(f"Sent /load: agent={args.agent} instrument={args.instrument} rev={args.revision} notes={len(notes)}")
+    elif args.pan is not None:
+        pass  # --pan alone already sent above
     else:
         parser.print_help()
         sys.exit(1)

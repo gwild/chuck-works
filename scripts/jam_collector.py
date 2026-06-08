@@ -143,9 +143,15 @@ def read_intent():
             intent["bars"] = int(m.group(3))
             break
 
-    # Roster = distinct agents in the last complete cycle.
+    # Roster = distinct agents in the current cycle when it has started, falling
+    # back to the last complete cycle. After a receiver restart on a long piece
+    # (for example 96 bars at 60 bpm), waiting for two `Cycle complete` markers
+    # would make intent read empty for the whole first multi-minute cycle even
+    # while audio is flowing.
     cycle_idxs = [i for i, ln in enumerate(lines) if _CYCLE_RE.search(ln)]
-    if len(cycle_idxs) >= 2:
+    if cycle_idxs and any(_PHRASE_RE.search(ln) for ln in lines[cycle_idxs[-1]:]):
+        window = lines[cycle_idxs[-1]:]
+    elif len(cycle_idxs) >= 2:
         lo, hi = cycle_idxs[-2], cycle_idxs[-1]
         window = lines[lo:hi]
     else:

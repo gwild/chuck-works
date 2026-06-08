@@ -115,6 +115,24 @@ class DashboardServerTest(unittest.TestCase):
         self.assertEqual(payload["compositions"][0]["name"], "cm7")
         self.assertEqual(payload["compositions"][0]["transport"]["bpm"], 60)
 
+    def test_api_compositions_accepts_trailing_slash(self):
+        (self.compositions_dir / "cm7.json").write_text(json.dumps({
+            "name": "cm7",
+            "transport": {"bpm": 60, "bars": 96},
+        }), encoding="utf-8")
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/compositions/", timeout=5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+        self.assertEqual(payload["compositions"][0]["name"], "cm7")
+
     def test_post_transport_start_runs_chuck_send(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)

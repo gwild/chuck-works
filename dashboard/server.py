@@ -181,7 +181,7 @@ class Handler(BaseHTTPRequestHandler):
             envelope["_stale"] = stale
             self._send(200, json.dumps(envelope), "application/json")
             return
-        if path == "/api/compositions":
+        if path in ("/api/compositions", "/api/compositions/"):
             try:
                 self._send(200, json.dumps(list_compositions()), "application/json")
             except ValueError as exc:

@@ -60,7 +60,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def run_command(argv):
-    return subprocess.run(argv, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=20)
+    return subprocess.run(argv, cwd=str(REPO_ROOT), capture_output=True, text=True)
 
 
 def read_state():

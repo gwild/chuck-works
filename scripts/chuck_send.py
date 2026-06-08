@@ -15,17 +15,26 @@ import struct
 import sys
 import os
 
-# Load from config
+import yaml
+
+# ── Config (all from this repo's config.yaml, no fallbacks) ─────────
+# Fail-loud on purpose, same pattern as chuck_relay.py. The old form
+# swallowed ANY load failure into hardcoded IP/port — after the #2450
+# migration there was no config.yaml at the resolved path at all, so
+# every invocation silently ran on constants that merely happened to
+# match reality. "Sent" prints whether or not the datagram goes
+# anywhere useful (engine constraint 7), so a wrong default here is
+# undetectable from the sender. A missing or broken config must stop
+# the send, not improvise one.
 _cfg_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.yaml")
 try:
-    import yaml
     with open(_cfg_file, encoding='utf-8') as _f:
         _cfg = yaml.safe_load(_f)
-    BEELINK_IP = str(_cfg.get("ssh_access", {}).get("hosts", {}).get("beelink", {}).get("ip", "192.168.1.84"))
-    OSC_PORT = int(_cfg.get("timers", {}).get("chuck_relay", {}).get("osc_port", 9000))
-except Exception:
-    BEELINK_IP = "192.168.1.84"
-    OSC_PORT = 9000
+    BEELINK_IP = str(_cfg["ssh_access"]["hosts"]["beelink"]["ip"])
+    OSC_PORT = int(_cfg["timers"]["chuck_relay"]["osc_port"])
+except (OSError, KeyError, TypeError, yaml.YAMLError) as _e:
+    sys.exit(f"FATAL chuck_send: cannot load receiver host/port from {_cfg_file}: "
+             f"{_e!r} — fix the config; there are no fallback defaults.")
 TICKS_PER_BEAT = 480
 
 

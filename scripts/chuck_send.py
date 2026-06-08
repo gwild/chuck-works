@@ -4,6 +4,8 @@
 Usage:
     python3 chuck_send.py --agent claude --instrument sine --notes "60,0.8,0,480;64,0.8,480,480;67,0.8,960,480"
     python3 chuck_send.py --start --bpm 120 --bars 8
+    python3 chuck_send.py --stop
+    python3 chuck_send.py --master-gain 0.85
 
 Notes format: pitch,velocity,start_tick,dur_ticks separated by semicolons.
 480 ticks = 1 beat at any BPM.
@@ -82,6 +84,16 @@ def build_start_message(bpm, ticks_per_beat, bars, countin_ticks):
     return address + type_tag + data
 
 
+def build_stop_message():
+    """Build OSC /stop message."""
+    return osc_string("/stop") + osc_string(",")
+
+
+def build_master_gain_message(gain):
+    """Build OSC /master_gain message."""
+    return osc_string("/master_gain") + osc_string(",f") + osc_float(gain)
+
+
 def parse_notes(notes_str):
     """Parse 'pitch,vel,start,dur;pitch,vel,start,dur;...' into list of dicts."""
     notes = []
@@ -120,6 +132,7 @@ def main():
     parser.add_argument("--revision", type=int, default=1, help="Phrase revision")
     parser.add_argument("--notes", help="Notes: pitch,vel,start_tick,dur_ticks;...")
     parser.add_argument("--start", action="store_true", help="Send /start message")
+    parser.add_argument("--stop", action="store_true", help="Send /stop message")
     parser.add_argument("--bpm", type=float, default=120.0, help="BPM for /start")
     parser.add_argument("--bars", type=int, default=8, help="Number of bars")
     parser.add_argument("--countin", type=int, default=0, help="Count-in ticks")
@@ -128,15 +141,21 @@ def main():
     parser.add_argument("--pan", type=float, default=None,
                         help="Send /pan for --agent: stereo position -1..+1 "
                              "(hand-rolled OSC was the only path before)")
+    parser.add_argument("--master-gain", type=float, default=None,
+                        help="Send /master_gain: shared output gain 0..1")
     args = parser.parse_args()
+
+    global_commands = int(args.start) + int(args.stop) + int(args.master_gain is not None)
+    if global_commands > 1:
+        print("--start, --stop, and --master-gain are global controls; send one per invocation", file=sys.stderr)
+        sys.exit(1)
+    if global_commands and (args.pan is not None or args.notes):
+        print("global controls cannot combine with --pan or --notes; send them separately", file=sys.stderr)
+        sys.exit(1)
 
     if args.pan is not None:
         if not args.agent:
             print("--pan requires --agent", file=sys.stderr)
-            sys.exit(1)
-        if args.start:
-            print("--pan cannot combine with --start (pan is per-agent, "
-                  "transport is global) — send them separately", file=sys.stderr)
             sys.exit(1)
         send_osc(build_pan_message(args.agent, args.pan), args.host, args.port)
         print(f"Sent /pan: agent={args.agent} pos={args.pan}")
@@ -149,6 +168,15 @@ def main():
         msg = build_start_message(args.bpm, TICKS_PER_BEAT, args.bars, args.countin)
         send_osc(msg, args.host, args.port)
         print(f"Sent /start: bpm={args.bpm} bars={args.bars} countin={args.countin}")
+    elif args.stop:
+        send_osc(build_stop_message(), args.host, args.port)
+        print("Sent /stop")
+    elif args.master_gain is not None:
+        if args.master_gain < 0.0 or args.master_gain > 1.0:
+            print("--master-gain must be between 0 and 1", file=sys.stderr)
+            sys.exit(1)
+        send_osc(build_master_gain_message(args.master_gain), args.host, args.port)
+        print(f"Sent /master_gain: gain={args.master_gain}")
     elif args.agent and args.notes:
         notes = parse_notes(args.notes)
         msg = build_load_message(args.agent, args.instrument, args.revision, notes)

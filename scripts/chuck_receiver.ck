@@ -1,5 +1,5 @@
 // chuck_receiver.ck — OSC receiver for ChucK jam sessions
-// Runs on beelink with JACK. Receives /load and /start messages.
+// Runs on beelink with JACK. Receives /load, /start, /stop, and gain messages.
 // Usage: chuck --driver:JACK chuck_receiver.ck
 
 // ── Config ──────────────────────────────────────────────────────────
@@ -806,6 +806,14 @@ fun void handleStart() {
     spork ~ runTransport(play_start, piece_dur, transport_gen);
 }
 
+// -- Handle /stop message ---------------------------------------------
+// Format: /stop. Bumps transport generation so the active transport stops
+// looping without spawning a replacement clock.
+fun void handleStop() {
+    1 +=> transport_gen;
+    <<< "[chuck_receiver] STOP: transport gen", transport_gen >>>;
+}
+
 // ── Main loop ───────────────────────────────────────────────────────
 // -- Handle /dubfx message --------------------------------------------
 // Format: /dubfx wet(f). Sets reverb/delay send depth (0=dry..1=wet).
@@ -831,6 +839,16 @@ fun void handlePan() {
     <<< "[chuck_receiver] PAN", a, pos >>>;
 }
 
+// -- Handle /master_gain message --------------------------------------
+// Format: /master_gain gain(f). Shared master output, clamped 0..1.
+fun void handleMasterGain() {
+    msg.getFloat(0) => float gain;
+    if (gain < 0.0) 0.0 => gain;
+    if (gain > 1.0) 1.0 => gain;
+    gain => master.gain;
+    <<< "[chuck_receiver] MASTER_GAIN", gain >>>;
+}
+
 <<< "[chuck_receiver] Listening on OSC port", OSC_PORT >>>;
 
 while (true) {
@@ -840,10 +858,14 @@ while (true) {
             handleLoad();
         } else if (msg.address == "/start") {
             handleStart();
+        } else if (msg.address == "/stop") {
+            handleStop();
         } else if (msg.address == "/dubfx") {
             handleDubFx();
         } else if (msg.address == "/pan") {
             handlePan();
+        } else if (msg.address == "/master_gain") {
+            handleMasterGain();
         } else {
             <<< "[chuck_receiver] Unknown OSC address:", msg.address >>>;
         }

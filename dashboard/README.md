@@ -65,21 +65,23 @@ Works today:
 ```
 GET  /api/compositions
 POST /api/transport/start              {"bpm": 172, "bars": 8, "countin": 0}
+POST /api/transport/stop               {}
+POST /api/gain/master                  {"gain": 0.85}
 POST /api/compositions/<name>/recall   {}
 ```
 
-The first pass intentionally returns loud `501` responses for controls the live
-receiver cannot honor yet:
+The dashboard proxies all control writes through `scripts/chuck_send.py` or
+`scripts/play_composition.py`; it does not pack OSC itself. Per-lane controls
+still return loud `501` responses because the live receiver cannot honor them
+yet:
 
 ```
-POST /api/transport/stop
-POST /api/gain/master
 POST /api/lanes/<agent>/mute
 POST /api/lanes/<agent>/gain
 ```
 
 Those endpoints should stay fail-loud until receiver OSC support lands
-(`/stop`, `/master_gain`, per-lane mute/gain). Do not fake success in the GUI.
+(per-lane mute/gain). Do not fake success in the GUI.
 
 ## Tests
 

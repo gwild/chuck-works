@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<!-- chuck-works dashboard — renderer. Bound to the collector's live schema
+     (jam_collector.py, schema_version 0-provisional, #2464). Robby publishes
+     RAW linear RMS + freshness and "doesn't decide colour"; this renderer owns
+     the dB conversion + thresholds + colour. When Wendy finalizes the schema,
+     update render() here — server.py stays generic.
+     Riddim-reuse: serve this same page with a riddim STATE_FILE; nothing below
+     is chuck-specific, it draws intent + the 3-tap reality chain + roster. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>chuck-works · observability</title>
+  <style>
+    body { font: 13px/1.5 ui-monospace, monospace; background:#0d0f12; color:#cdd; margin:0; padding:16px; }
+    h1 { font-size:15px; margin:14px 0 2px; }
+    .stale-banner { display:none; background:#922; color:#fff; padding:6px 10px; border-radius:4px; margin:8px 0; font-weight:bold; }
+    .ok { color:#5c6; } .warn { color:#fc6; } .dead { color:#f66; } .muted { color:#667; }
+    .chain { display:flex; align-items:stretch; gap:6px; margin:8px 0; flex-wrap:wrap; }
+    .tap { background:#141821; padding:8px 12px; border-radius:4px; min-width:150px; }
+    .tap .nm { color:#89a; } .tap .big { font-size:18px; } .tap .rng { color:#667; font-size:11px; }
+    .arrow { align-self:center; color:#445; font-size:18px; }
+    table { border-collapse:collapse; margin-top:6px; }
+    td { padding:2px 10px 2px 0; }
+    #sub { color:#667; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1 style="margin-top:0">chuck-works · observability <span id="sub"></span></h1>
+  <div id="stale" class="stale-banner"></div>
+
+  <h1>transport</h1>
+  <div id="transport" class="muted">—</div>
+
+  <h1>signal — 3-tap chain (where does audio die?)</h1>
+  <div class="chain" id="chain"></div>
+  <div id="chainnote" class="muted"></div>
+
+  <h1>roster <span id="rostercount" class="muted"></span></h1>
+  <div id="roster" class="muted">—</div>
+
+<script>
+// Robby publishes RAW linear RMS (0..1); colour/threshold is the reader's job.
+function db(rms){ return (rms==null||rms<=0) ? null : 20*Math.log10(rms); }
+function cls(d){ if(d==null) return 'muted'; if(d<=-55) return 'dead'; if(d<=-40) return 'warn'; return 'ok'; }
+function fmt(d){ return d==null ? '—' : d.toFixed(1)+' dB'; }
+
+function tap(name, node){            // node = reality.jack | .gmixer | one mount entry
+  if(!node) return '<div class="tap"><div class="nm">'+name+'</div><div class="big muted">—</div></div>';
+  const d = db(node.rms), r = node.ring||{};
+  const rng = (r.min!=null&&r.max!=null) ? ('▾'+fmt(db(r.min))+' ▴'+fmt(db(r.max))) : '';
+  return '<div class="tap"><div class="nm">'+name+'</div>'+
+    '<div class="big '+cls(d)+'">'+fmt(d)+'</div>'+
+    '<div class="rng">'+rng+(node.ok===false?' <span class="dead">probe-fail</span>':'')+'</div></div>';
+}
+
+function render(s){
+  const banner=document.getElementById('stale');
+  if(s._stale){ banner.style.display='block';
+    banner.textContent='⚠ STALE ('+(s._age_secs==null?'no clock':s._age_secs+'s old')+
+      ') — collector may be down; values below are NOT live'+(s._error?(' · '+s._error):''); }
+  else banner.style.display='none';
+  document.getElementById('sub').textContent =
+    (s._age_secs!=null?'· state '+s._age_secs+'s ago ':'')+(s.schema_version?('· schema '+s.schema_version):'');
+
+  const it=s.intent||{}, re=s.reality||{};
+  document.getElementById('transport').innerHTML =
+    '<span class="'+(it.transport_running?'ok':'dead')+'">'+(it.transport_running?'RUNNING':'STOPPED')+'</span>'+
+    '  ·  bpm '+(it.bpm!=null?it.bpm:'?')+'  ·  bars '+(it.bars!=null?it.bars:'?')+
+    (it.cycle_secs!=null?('  ·  cycle '+it.cycle_secs+'s'):'')+
+    (it.last_phrase_age_secs!=null?('  ·  last /load '+it.last_phrase_age_secs+'s ago'):'');
+
+  // the 3-tap chain: receiver/JACK (pre-mix) → gmixer (mix) → icecast mount.
+  // the delta between taps localizes the dead layer (source-thin vs mix-broken vs mount-silent).
+  const mounts = re.mount||[];
+  let html = tap('JACK (pre-mix)', re.jack) + '<div class="arrow">→</div>' +
+             tap('gmixer (mix)', re.gmixer);
+  mounts.forEach(function(m){ html += '<div class="arrow">→</div>' + tap(m.mount||'mount', m); });
+  document.getElementById('chain').innerHTML = html;
+
+  // localize: which adjacent tap shows the big drop?
+  const j=db(re.jack&&re.jack.rms), g=db(re.gmixer&&re.gmixer.rms), m0=mounts[0]?db(mounts[0].rms):null;
+  let note='';
+  if(j!=null&&j<=-55) note='JACK silent → SOURCE-thin/dead (receiver or phrases), not a mix/mount fault.';
+  else if(j!=null&&g!=null&&g-j<=-20) note='drop at gmixer → MIX-broken (gmixer eating signal).';
+  else if(g!=null&&m0!=null&&m0-g<=-20) note='drop at mount → WIRING/stream gap (gststream→icecast), the #2442 class.';
+  else if(m0!=null&&m0>-40) note='audio flowing end-to-end.';
+  document.getElementById('chainnote').textContent = note;
+
+  const r=it.roster||[];
+  document.getElementById('rostercount').textContent='('+(it.roster_count!=null?it.roster_count:r.length)+'/32)';
+  document.getElementById('roster').textContent = r.length ? r.join('  ·  ') : '(none playing)';
+}
+
+async function tick(){
+  try{ const r=await fetch('/api/state',{cache:'no-store'}); render(await r.json()); }
+  catch(e){ const b=document.getElementById('stale'); b.style.display='block';
+    b.textContent='⚠ dashboard cannot reach /api/state: '+e; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

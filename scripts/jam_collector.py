@@ -26,11 +26,14 @@ a mount-up-but-silent reads gmixer-OK/mount-low.
 Each tap keeps a rolling ~60s ring so a legit musical trough (a pad releasing)
 reads as a dip, not a stall.
 
-NOTE: the JSON shape here is PROVISIONAL. Wendy (#2464) owns the final schema
-contract, including staleness-as-first-class-RED. The collector publishes the
-raw freshness timestamps each reader needs to make that call; it does not
-itself decide colour. The only coupling to Claude's dashboard is this file's
-path + that schema.
+SCHEMA: v1 (Wendy's ruling, #2464) — additive-only from here; existing keys
+never change meaning. Contract the collector upholds: every rms/peak is RAW
+LINEAR [0,1] (the reader owns 20·log10→dB + colour); freshness is published as
+RAW unix timestamps only (the reader owns staleness-as-RED, so a frozen file
+reads RED not last-known-good). Per-lane RMS is deliberately absent — all voices
+sum at master before the single JACK tap, so there is no per-voice level to
+measure; the 3 reality taps (jack/gmixer/mount) are the only real measurement
+points. The only coupling to Claude's dashboard is this file's path + the schema.
 """
 
 import json
@@ -68,6 +71,11 @@ BEATS_PER_BAR = int(_env("JAM_BEATS_PER_BAR", "4"))
 
 _START_RE = re.compile(r"START: bpm ([\d.]+) tpb (\d+) bars (\d+) countin (\d+)")
 _PHRASE_RE = re.compile(r"Playing phrase from ([\w.-]+)")
+# "Loaded phrase from <name> : <instrument> rev <N> <notes> notes" — carries the
+# per-lane instrument+rev that a name-only roster can't show. This is what makes
+# merged≠live (kick still loaded as `sine` after a deploy) and a stale rev
+# visible per lane (Wendy's v1 ruling, #2464).
+_LOADED_RE = re.compile(r"Loaded phrase from ([\w.-]+) : (\S+) rev (\d+)")
 _CYCLE_RE = re.compile(r"Cycle complete, looping")
 _GMIX_RE = re.compile(r"outlevel: RMS dB: (-?[\d.]+)")
 
@@ -116,7 +124,7 @@ def read_intent():
     """
     intent = {
         "transport_running": False, "bpm": None, "tpb": None, "bars": None,
-        "roster": [], "roster_count": 0, "source": "receiver_log",
+        "roster": [], "roster_count": 0, "lanes": [], "source": "receiver_log",
         "log_mtime_unix": None, "last_phrase_age_secs": None,
         "cycle_secs": None,
     }
@@ -149,6 +157,29 @@ def read_intent():
             roster.append(m.group(1))
     intent["roster"] = roster
     intent["roster_count"] = len(roster)
+
+    # lanes: enrich each roster member with the instrument+rev it most recently
+    # LOADED (the whole tail, not just this cycle — a load persists across cycles
+    # until superseded). roster stays the membership truth; lanes adds detail in
+    # 1:1 correspondence, additive over the name-list (Wendy v1, #2464).
+    # NOTE: last_phrase_age_secs is null — the receiver log has no per-line
+    # timestamps, so a per-lane age isn't derivable here; only the whole-log
+    # mtime exists (intent.last_phrase_age_secs). It lights up if/when the
+    # receiver stamps per-line times (#2442). We publish the key, not a guess.
+    latest_load = {}
+    for ln in lines:
+        m = _LOADED_RE.search(ln)
+        if m:
+            latest_load[m.group(1)] = {"instrument": m.group(2), "rev": int(m.group(3))}
+    intent["lanes"] = [
+        {
+            "name": name,
+            "instrument": latest_load.get(name, {}).get("instrument"),
+            "rev": latest_load.get(name, {}).get("rev"),
+            "last_phrase_age_secs": None,
+        }
+        for name in roster
+    ]
 
     age = time.time() - intent["log_mtime_unix"]
     intent["last_phrase_age_secs"] = round(age, 1)
@@ -259,7 +290,7 @@ def collect_once():
                       "ring_secs": RING_SECONDS},
         "intent": intent,
         "reality": taps,
-        "schema_version": "0-provisional",
+        "schema_version": "1",
     }
 
 

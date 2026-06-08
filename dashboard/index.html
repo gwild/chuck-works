@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<!-- chuck-works dashboard — renderer (binds to the collector's state schema).
+     SCHEMA IS PROVISIONAL here (Wendy owns the final shape, #2464). When it
+     lands, update render() below — the server stays generic. Reuse for riddim
+     = serve this same page with a riddim STATE_FILE; the renderer is agnostic
+     to which instrument, it just draws mounts + roster + transport. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>chuck-works · observability</title>
+  <style>
+    body { font: 13px/1.5 ui-monospace, monospace; background:#0d0f12; color:#cdd; margin:0; padding:16px; }
+    h1 { font-size:15px; margin:0 0 4px; }
+    .stale-banner { display:none; background:#922; color:#fff; padding:6px 10px; border-radius:4px; margin:8px 0; font-weight:bold; }
+    .ok { color:#5c6; } .warn { color:#fc6; } .dead { color:#f66; }
+    table { border-collapse:collapse; width:100%; margin-top:8px; }
+    th,td { text-align:left; padding:3px 8px; border-bottom:1px solid #222; }
+    th { color:#89a; font-weight:normal; }
+    .mounts { display:flex; gap:18px; flex-wrap:wrap; margin:8px 0; }
+    .mount { background:#141821; padding:8px 12px; border-radius:4px; min-width:160px; }
+    .big { font-size:18px; } .muted { color:#667; }
+    #updated { color:#667; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>chuck-works · observability <span id="updated"></span></h1>
+  <div id="stale" class="stale-banner"></div>
+  <div><b>transport</b> <span id="transport" class="muted">—</span></div>
+  <div class="mounts" id="mounts"></div>
+  <h1 style="margin-top:14px">roster <span class="muted" id="rostercount"></span></h1>
+  <table id="roster"><thead><tr>
+    <th>lane</th><th>instrument</th><th>rev</th><th>RMS</th><th>state</th>
+  </tr></thead><tbody></tbody></table>
+
+<script>
+// dB helper: collector reports decoded RMS dBFS; silent ~ -70dB.
+function lvl(db){ if(db==null) return ['—','muted'];
+  if(db<=-60) return [db.toFixed(1)+' dB','dead'];
+  if(db<=-40) return [db.toFixed(1)+' dB','warn'];
+  return [db.toFixed(1)+' dB','ok']; }
+
+function render(s){
+  // staleness is first-class RED (#2464): never trust a frozen last-good state.
+  const banner=document.getElementById('stale');
+  if(s._stale){ banner.style.display='block';
+    banner.textContent='⚠ STALE STATE ('+(s._age_secs==null?'no clock':s._age_secs+'s old')+
+      ') — collector may be down; values below are NOT live'+(s._error?(' · '+s._error):''); }
+  else banner.style.display='none';
+  document.getElementById('updated').textContent = s._age_secs!=null ? '· '+s._age_secs+'s ago' : '';
+
+  // transport (bpm/bars/cycle) — provisional fields, Jan exports from receiver handleStart.
+  const t=s.transport||{};
+  document.getElementById('transport').textContent =
+    (t.bpm?('bpm '+t.bpm):'bpm ?')+'  ·  '+(t.bars?('bars '+t.bars):'bars ?')+
+    (t.cycle_bar!=null?('  ·  bar '+t.cycle_bar+'/'+(t.bars||'?')):'')+
+    (t.running===false?'  ·  STOPPED':'');
+
+  // 3-tap decoded RMS per mount (Robby's collector): receiver/JACK, gmixer, mount.
+  const m=document.getElementById('mounts'); m.innerHTML='';
+  (s.mounts||[]).forEach(function(mt){
+    const [txt,cls]=lvl(mt.rms_db);
+    const d=document.createElement('div'); d.className='mount';
+    d.innerHTML='<div class="muted">'+(mt.name||'?')+'</div>'+
+      '<div class="big '+cls+'">'+txt+'</div>'+
+      (mt.peak_db!=null?'<div class="muted">peak '+mt.peak_db.toFixed(1)+'</div>':'');
+    m.appendChild(d);
+  });
+
+  // per-lane roster: name/instrument/rev/RMS/slot-state — intent vs reality side by side.
+  const tb=document.querySelector('#roster tbody'); tb.innerHTML='';
+  const lanes=s.roster||[];
+  document.getElementById('rostercount').textContent='('+lanes.length+(s.roster_cap?('/'+s.roster_cap):'')+')';
+  lanes.forEach(function(l){
+    const [txt,cls]=lvl(l.rms_db);
+    const st=l.slot_state||'?';
+    const stcls = st==='live'?'ok':(st==='dead'?'dead':'warn');
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+(l.agent||'?')+'</td><td>'+(l.instrument||'?')+'</td>'+
+      '<td>'+(l.rev!=null?l.rev:'?')+'</td><td class="'+cls+'">'+txt+'</td>'+
+      '<td class="'+stcls+'">'+st+'</td>';
+    tb.appendChild(tr);
+  });
+}
+
+async function tick(){
+  try{ const r=await fetch('/api/state',{cache:'no-store'}); render(await r.json()); }
+  catch(e){ document.getElementById('stale').style.display='block';
+    document.getElementById('stale').textContent='⚠ dashboard cannot reach /api/state: '+e; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

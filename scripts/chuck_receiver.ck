@@ -267,6 +267,52 @@ fun void playNote(string instrument, int pitch, float velocity, dur length, floa
         pan =< master;
         return;
     }
+    if (instrument == "kick" || instrument == "Kick") {
+        // Proper bass drum (Gregory, 2026-06-07: every approximation
+        // 'sounds like a metronome' / 'Beep'). The classic synthesis
+        // recipe: the sine FUNDAMENTAL DROPS (~2.5-4x -> body) over the
+        // first 60ms while the amp decays fast with no sustain — the
+        // drop IS the thump; a static sine can only ever beep.
+        // pitch sets the BODY (end) frequency, clamped 30-120Hz;
+        // velocity scales both level and drop depth (hot hits start
+        // higher = harder beater). dur_ticks shapes only the body ring
+        // (capped 250ms) — the attack shape is fixed, drum-like.
+        SinOsc s => ADSR env => Pan2 pan => master;
+        velocity * 0.30 => env.gain; // sub fundamentals read quiet — seat hot
+        panval => pan.pan;
+        midiToFreq(pitch) => float fbody;
+        if (fbody < 30.0) 30.0 => fbody;
+        if (fbody > 120.0) 120.0 => fbody;
+        fbody * (2.5 + velocity * 1.5) => float fstart;
+        fstart => s.freq;
+        // Sustain 0.15, not 0: with S=0 the envelope died at ~91ms and
+        // dur_ticks shaped NOTHING (the ring logic below was dead code
+        // promising a knob that didn't exist — Rebecca's #2455 blocker;
+        // Rusty raised the same question independently).
+        // 0.15 = the 808-style body: dur_ticks genuinely controls how
+        // long the low fundamental rings (<=250ms), keyOff's 60ms
+        // release ends it. Tight 909 hits = just send short dur_ticks.
+        env.set(1::ms, 90::ms, 0.15, 60::ms);
+        env.keyOn();
+        now => time t0;
+        60::ms => dur sweep;
+        // Exponential pitch drop; 2ms yielded steps (no VM spin).
+        while (now < t0 + sweep) {
+            ((now - t0) / sweep) => float ph;
+            fstart * Math.pow(fbody / fstart, ph) => s.freq;
+            2::ms => now;
+        }
+        fbody => s.freq;
+        length - sweep => dur rest;
+        if (rest > 250::ms) 250::ms => rest;
+        if (rest > 0::ms) rest => now;
+        env.keyOff();
+        60::ms => now;
+        s =< env;
+        env =< pan;
+        pan =< master;
+        return;
+    }
     // ── Noise voices (Gregory's dub asks, #chuck 2026-06-06: "hit hats",
     // "pink noise with slow filter sweep", "in stereo"). Same /load
     // interface and duration contract: dur_ticks means what it says.
@@ -421,7 +467,12 @@ fun void playNote(string instrument, int pitch, float velocity, dur length, floa
         pan =< master;
         return;
     }
-    if (instrument == "pad" || instrument == "swell") {
+    // pad/swell INTENTIONALLY routed to non-matching names = DISABLED in the
+    // committed code (not a live sed): the voice's uncapped attack runs to a
+    // NaN/runaway that poisons the summed master Gain and silences the WHOLE
+    // jam, not just this lane (trap #7, clean-tested 2026-06-07). Stays disabled
+    // until #2436 lands a bounded attack; choir lanes use voice(VoicForm)/sine.
+    if (instrument == "padoff" || instrument == "swelloff") {
         // True swelling chorus pad (Gregory's ask, #chuck 2026-06-06).
         // The rhythm voices clamp attack at <=100ms so dur_ticks stays
         // percussive — the right ceiling for comping, the wrong one for

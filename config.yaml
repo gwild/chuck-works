@@ -19,3 +19,11 @@ timers:
     channel: "#chuck-commands"
     report_channel: "#chuck"
     osc_port: 9000
+  # Loopback settle windows for scripts/chuck-e2e-test.sh (migrated from
+  # milton with the test, #2450). Not musical durations — receiver runs in
+  # virtual time under --silent; these pace the harness's OSC sends + waits.
+  chuck_e2e:
+    startup_wait_sec: 10
+    poll_interval_sec: 1
+    load_settle_sec: 2
+    supersede_settle_sec: 3

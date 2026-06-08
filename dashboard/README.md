@@ -39,28 +39,38 @@ Nothing here is chuck-specific in code. Point `STATE_FILE` at riddim's state
 file, set `TITLE`/`PORT`, and the same server + page render a riddim dashboard.
 Keep instrument-specifics in the *data*, not the renderer.
 
-## State-file schema — PROVISIONAL (Wendy owns the final shape, #2464)
+## State-file schema — collector's live shape (schema_version 0-provisional)
 
 `server.py` doesn't care about the shape; `index.html`'s `render()` binds to it.
-When Wendy finalizes the schema, update the renderer, not the server. Current
-provisional shape the renderer expects:
+Wendy owns the FINAL schema (#2464) — when it changes, update the renderer, not
+the server. The collector (jam_collector.py) publishes RAW linear RMS (0..1) and
+freshness, and explicitly does NOT decide colour — the renderer owns dB
+conversion (`20·log10(rms)`) + thresholds + colour. Live shape:
 
 ```jsonc
 {
-  "updated_unix": 1749350000,          // staleness clock (required)
-  "transport": { "bpm": 60, "bars": 96, "cycle_bar": 12, "running": true },
-  "mounts": [                          // 3-tap decoded RMS
-    { "name": "/jam",   "rms_db": -22.8, "peak_db": -6.0 },
-    { "name": "/stringdriver-mix", "rms_db": -23.7 },
-    { "name": "/riddim", "rms_db": -91.0 }
-  ],
-  "roster": [                          // per-lane intent + reality
-    { "agent": "claude", "instrument": "sine", "rev": 143,
-      "rms_db": -28.0, "slot_state": "live" }   // live | muted | dead
-  ],
-  "roster_cap": 32
+  "updated_unix": 1780888101,            // staleness clock (required)
+  "schema_version": "0-provisional",
+  "collector": { "pid": 3850195, "interval_secs": 10, "ring_secs": 60 },
+  "intent": {                            // from receiver log/status
+    "transport_running": true, "bpm": 60, "tpb": 480, "bars": 96,
+    "roster": ["claude", "windy-kick"], "roster_count": 2,
+    "last_phrase_age_secs": 49.1, "cycle_secs": 384.0
+  },
+  "reality": {                           // 3-tap decoded RMS (linear)
+    "jack":   { "rms": 0.0197, "peak": 0.117, "ok": true, "ring": {"now":0.0197,"min":0.0165,"max":0.0212,"avg":0.0193,"samples":5} },
+    "gmixer": { "rms": 0.0366, "peak": null,  "ok": true, "ring": { } },
+    "mount":  [ { "mount": "/jam.mp3", "rms": 0.0733, "peak": 0.582, "ok": true, "ring": { } } ]
+  }
 }
 ```
+
+The 3-tap chain (jack → gmixer → mount) is the centerpiece: the delta between
+adjacent taps localizes the dead layer — JACK-silent = source-thin/dead;
+drop at gmixer = mix-broken; drop at mount = wiring/stream gap (#2442).
+FUTURE enrichment (not yet in collector): per-lane instrument/rev/RMS/slot-state
+in `intent.roster` (currently name-list only) — would surface rev-guard drops +
+merged≠live per lane.
 
 ## Roadmap (#2464)
 

@@ -22,11 +22,41 @@
     table { border-collapse:collapse; margin-top:6px; }
     td { padding:2px 10px 2px 0; }
     #sub { color:#667; font-size:12px; }
+    .panel { background:#141821; border:1px solid #22303a; border-radius:4px; padding:10px; margin:8px 0 12px; max-width:760px; }
+    .row { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin:6px 0; }
+    label { color:#89a; display:flex; flex-direction:column; gap:2px; }
+    input, select, button { font:inherit; background:#0d0f12; color:#cdd; border:1px solid #33444f; border-radius:3px; padding:5px 7px; }
+    input { width:84px; }
+    select { min-width:240px; }
+    button { cursor:pointer; }
+    button:hover:not(:disabled) { border-color:#6b8796; }
+    button:disabled { color:#556; border-color:#26313a; cursor:not-allowed; }
+    #actionstatus { min-height:18px; }
   </style>
 </head>
 <body>
   <h1 style="margin-top:0">chuck-works · observability <span id="sub"></span></h1>
   <div id="stale" class="stale-banner"></div>
+
+  <h1>controls</h1>
+  <div class="panel">
+    <div class="row">
+      <label>bpm <input id="bpm" type="number" min="1" step="1" value="172"></label>
+      <label>bars <input id="bars" type="number" min="1" step="1" value="8"></label>
+      <label>countin <input id="countin" type="number" min="0" step="1" value="0"></label>
+      <button id="startbtn">Start</button>
+      <button id="stopbtn" disabled title="Receiver has no /stop OSC handler yet">Stop</button>
+    </div>
+    <div class="row">
+      <label>composition <select id="compositions"></select></label>
+      <button id="recallbtn">Recall</button>
+    </div>
+    <div class="row">
+      <button disabled title="Receiver has no /master_gain OSC handler yet">Master gain</button>
+      <button disabled title="Receiver has no per-lane mute/gain OSC handlers yet">Lane gain/mute</button>
+    </div>
+    <div id="actionstatus" class="muted"></div>
+  </div>
 
   <h1>transport</h1>
   <div id="transport" class="muted">—</div>
@@ -43,6 +73,8 @@
 function db(rms){ return (rms==null||rms<=0) ? null : 20*Math.log10(rms); }
 function cls(d){ if(d==null) return 'muted'; if(d<=-55) return 'dead'; if(d<=-40) return 'warn'; return 'ok'; }
 function fmt(d){ return d==null ? '—' : d.toFixed(1)+' dB'; }
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function status(msg, kind='muted'){ const el=document.getElementById('actionstatus'); el.className=kind; el.textContent=msg; }
 
 function tap(name, node){            // node = reality.jack | .gmixer | one mount entry
   if(!node) return '<div class="tap"><div class="nm">'+name+'</div><div class="big muted">—</div></div>';
@@ -96,6 +128,59 @@ async function tick(){
   catch(e){ const b=document.getElementById('stale'); b.style.display='block';
     b.textContent='⚠ dashboard cannot reach /api/state: '+e; }
 }
+
+async function postJSON(url, body){
+  const r = await fetch(url, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body||{}),
+    cache:'no-store'
+  });
+  const payload = await r.json().catch(() => ({ok:false,error:'non-JSON response'}));
+  if(!r.ok || payload.ok===false) throw new Error(payload.error || ('HTTP '+r.status));
+  return payload;
+}
+
+async function loadCompositions(){
+  const select = document.getElementById('compositions');
+  try{
+    const r = await fetch('/api/compositions',{cache:'no-store'});
+    const payload = await r.json();
+    const items = payload.compositions || [];
+    select.innerHTML = items.length ? items.map(c => {
+      const t = c.transport || {};
+      const label = `${c.title || c.name} · ${t.bpm || '?'} bpm/${t.bars || '?'} bars`;
+      return `<option value="${esc(c.name)}">${esc(label)}</option>`;
+    }).join('') : '<option value="">(no compositions)</option>';
+  }catch(e){
+    select.innerHTML = '<option value="">(composition list failed)</option>';
+    status('composition list failed: '+e.message, 'dead');
+  }
+}
+
+document.getElementById('startbtn').addEventListener('click', async () => {
+  try{
+    const payload = await postJSON('/api/transport/start', {
+      bpm: Number(document.getElementById('bpm').value),
+      bars: Number(document.getElementById('bars').value),
+      countin: Number(document.getElementById('countin').value)
+    });
+    status(payload.stdout || 'start sent', 'ok');
+    tick();
+  }catch(e){ status('start failed: '+e.message, 'dead'); }
+});
+
+document.getElementById('recallbtn').addEventListener('click', async () => {
+  const name = document.getElementById('compositions').value;
+  if(!name){ status('no composition selected', 'warn'); return; }
+  try{
+    const payload = await postJSON('/api/compositions/'+encodeURIComponent(name)+'/recall', {});
+    status(payload.stdout || ('recalled '+name), 'ok');
+    tick();
+  }catch(e){ status('recall failed: '+e.message, 'dead'); }
+});
+
+loadCompositions();
 tick(); setInterval(tick, 2000);
 </script>
 </body>

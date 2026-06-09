@@ -22,6 +22,12 @@ def load_server():
     return module
 
 
+def _reject_constant(_token):
+    # Mirror a strict JSON parser (the browser's JSON.parse): NaN/Infinity tokens
+    # are invalid and must never appear on the wire.
+    raise AssertionError("non-finite JSON constant on the wire")
+
+
 class DashboardServerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -93,6 +99,98 @@ class DashboardServerTest(unittest.TestCase):
         self.assertIn("_age_secs", payload)
         self.assertFalse(payload["_stale"])
         self.assertEqual(payload["intent"]["roster"], ["claude"])
+        self.assertIn("_ready", payload)
+        self.assertIn(payload["_ready"]["level"], ("green", "yellow", "red"))
+
+    def test_api_state_nan_is_emitted_as_null_valid_json(self):
+        # The collector legitimately writes NaN for a metric with no valid
+        # samples (jack.rms before audio flows). Bare NaN is NOT valid JSON and
+        # breaks the browser's JSON.parse, blanking the GUI. /api/state must
+        # always emit valid JSON, with non-finite floats as null.
+        self.write_state(
+            time.time(),
+            reality={"jack": {"rms": float("nan"), "ok": True,
+                              "ring": {"avg": float("inf"), "min": float("-inf"), "samples": 6}},
+                     "mount": []},
+        )
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=5) as resp:
+                raw = resp.read().decode("utf-8")
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+        self.assertNotIn("NaN", raw)
+        self.assertNotIn("Infinity", raw)
+        payload = json.loads(raw, parse_constant=_reject_constant)  # strict parse must succeed
+        self.assertIsNone(payload["reality"]["jack"]["rms"])
+        self.assertIsNone(payload["reality"]["jack"]["ring"]["avg"])
+        self.assertEqual(payload["reality"]["jack"]["ring"]["samples"], 6)
+
+    # --- compute_ready: full-chain readiness (drives the GUI dot) ---
+
+    def _ready(self, reality, stale=False, age=2.0):
+        state = {"updated_unix": time.time(), "reality": reality}
+        return self.server.compute_ready(state, age, stale)
+
+    def test_ready_green_when_jack_and_mount_carry_audio(self):
+        r = self._ready({"jack": {"rms": 0.02, "ok": True},
+                         "mount": [{"mount": "/jam.mp3", "rms": 0.04, "ok": True}]})
+        self.assertEqual(r["level"], "green")
+
+    def test_ready_yellow_when_mount_silent(self):
+        r = self._ready({"jack": {"rms": 0.02, "ok": True},
+                         "mount": [{"mount": "/jam.mp3", "rms": 0.0000001, "ok": True}]})
+        self.assertEqual(r["level"], "yellow")
+
+    def test_ready_yellow_when_mount_absent(self):
+        r = self._ready({"jack": {"rms": 0.02, "ok": True}, "mount": []})
+        self.assertEqual(r["level"], "yellow")
+
+    def test_ready_red_when_jack_nan_despite_ok_true(self):
+        # The false-positive case: collector reports ok:true rms:NaN with no
+        # real audio (jack_rec produced an empty wav). Must NOT read green.
+        r = self._ready({"jack": {"rms": float("nan"), "ok": True},
+                         "mount": [{"mount": "/jam.mp3", "rms": 0.04, "ok": True}]})
+        self.assertEqual(r["level"], "red")
+
+    def test_ready_red_when_stale(self):
+        r = self._ready({"jack": {"rms": 0.02, "ok": True},
+                         "mount": [{"mount": "/jam.mp3", "rms": 0.04, "ok": True}]}, stale=True)
+        self.assertEqual(r["level"], "red")
+
+    # --- /api/launch + /api/shutdown drive systemctl jam.target ---
+
+    def _post(self, path):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}", data=b"{}",
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+
+    def test_post_launch_starts_jam_target(self):
+        payload = self._post("/api/launch")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(self.commands[0], ["systemctl", "--user", "start", "jam.target"])
+
+    def test_post_shutdown_stops_jam_target(self):
+        payload = self._post("/api/shutdown")
+        self.assertTrue(payload["ok"])
+        self.assertEqual(self.commands[0], ["systemctl", "--user", "stop", "jam.target"])
 
     def test_api_compositions_lists_manifest_summaries(self):
         (self.compositions_dir / "cm7.json").write_text(json.dumps({

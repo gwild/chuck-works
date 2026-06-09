@@ -1,0 +1,13 @@
+[Unit]
+Description=JACK dummy audio server for the ChucK jam chain
+Documentation=https://github.com/gwild/chuck-works
+# Dummy driver: beelink is a headless stream box. ChucK's output reaches
+# listeners via GStreamer -> Icecast, not local speakers, so JACK needs no
+# hardware device. The only ALSA card (hw:0) is held by PulseAudio, so a
+# -dalsa jackd cannot grab it; -ddummy sidesteps that contention entirely.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/jackd -ddummy -r44100 -p1024
+Restart=always
+RestartSec=2

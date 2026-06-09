@@ -1,0 +1,18 @@
+[Unit]
+Description=GStreamer JACK->Icecast streamer for the ChucK jam (mount /jam.mp3)
+Documentation=https://github.com/gwild/chuck-works
+# Needs jackd and the ChucK client up first: jam_stream.py wires
+# ChucK:outport 0/1 -> gststream after the ports register.
+Requires=jackd-dummy.service chuck-receiver.service
+After=jackd-dummy.service chuck-receiver.service
+BindsTo=jackd-dummy.service
+PartOf=jam.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/gregory/chuck-works/scripts
+ExecStart=/usr/bin/python3 /home/gregory/chuck-works/scripts/jam_stream.py
+Restart=on-failure
+RestartSec=2
+
+# No [Install]: started only by jam.target.

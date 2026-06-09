@@ -15,6 +15,9 @@
     h1 { font-size:15px; margin:14px 0 2px; }
     .stale-banner { display:none; background:#922; color:#fff; padding:6px 10px; border-radius:4px; margin:8px 0; font-weight:bold; }
     .ok { color:#5c6; } .warn { color:#fc6; } .dead { color:#f66; } .muted { color:#667; }
+    .dot { display:inline-block; width:11px; height:11px; border-radius:50%; margin-right:6px; vertical-align:middle; background:#667; }
+    .dot.green { background:#5c6; } .dot.yellow { background:#fc6; } .dot.red { background:#f66; }
+    #ready { font-size:13px; }
     .chain { display:flex; align-items:stretch; gap:6px; margin:8px 0; flex-wrap:wrap; }
     .tap { background:#141821; padding:8px 12px; border-radius:4px; min-width:150px; }
     .tap .nm { color:#89a; } .tap .big { font-size:18px; } .tap .rng { color:#667; font-size:11px; }
@@ -36,10 +39,16 @@
 </head>
 <body>
   <h1 style="margin-top:0">chuck-works · observability <span id="sub"></span></h1>
+  <div id="ready" class="muted"><span class="dot"></span><span id="readytext">readiness unknown</span></div>
   <div id="stale" class="stale-banner"></div>
 
   <h1>controls</h1>
   <div class="panel">
+    <div class="row">
+      <button id="launchbtn">Launch chain</button>
+      <button id="shutdownbtn">Stop chain</button>
+      <span class="muted">brings up jackd → ChucK → GStreamer → Icecast</span>
+    </div>
     <div class="row">
       <label>bpm <input id="bpm" type="number" min="1" step="1" value="172"></label>
       <label>bars <input id="bars" type="number" min="1" step="1" value="8"></label>
@@ -94,6 +103,14 @@ function render(s){
   else banner.style.display='none';
   document.getElementById('sub').textContent =
     (s._age_secs!=null?'· state '+s._age_secs+'s ago ':'')+(s.schema_version?('· schema '+s.schema_version):'');
+
+  const rd = s._ready || {level:'red', reasons:['no readiness']};
+  const dotcls = {green:'green', yellow:'yellow', red:'red'}[rd.level] || '';
+  const lvltxt = {green:'READY', yellow:'PARTIAL', red:'DOWN'}[rd.level] || '?';
+  const readyEl = document.getElementById('ready');
+  readyEl.className = {green:'ok', yellow:'warn', red:'dead'}[rd.level] || 'muted';
+  readyEl.innerHTML = '<span class="dot '+dotcls+'"></span>'+lvltxt+
+    '<span class="muted"> · '+esc((rd.reasons||[]).join('; '))+'</span>';
 
   const it=s.intent||{}, re=s.reality||{};
   document.getElementById('transport').innerHTML =
@@ -192,6 +209,36 @@ document.getElementById('stopbtn').addEventListener('click', async () => {
     status(payload.stdout || 'stop sent', 'ok');
     tick();
   }catch(e){ status('stop failed: '+e.message, 'dead'); }
+});
+
+document.getElementById('launchbtn').addEventListener('click', async () => {
+  const btn = document.getElementById('launchbtn');
+  btn.disabled = true;
+  try{
+    await postJSON('/api/launch', {});
+    status('chain launching — waiting for green…', 'warn');
+    // Poll readiness until green or ~30s cap; the 2s tick also keeps the dot fresh.
+    const deadline = Date.now() + 30000;
+    while(Date.now() < deadline){
+      await new Promise(r => setTimeout(r, 2000));
+      let s; try{ s = await (await fetch('/api/state',{cache:'no-store'})).json(); }catch(e){ continue; }
+      render(s);
+      const lvl = s._ready && s._ready.level;
+      if(lvl === 'green'){ status('chain READY', 'ok'); btn.disabled=false; return; }
+      if(lvl === 'red'){ status('chain still DOWN: '+((s._ready.reasons||[]).join('; ')), 'dead'); }
+      else { status('chain PARTIAL: '+((s._ready.reasons||[]).join('; ')), 'warn'); }
+    }
+    status('launch did not reach green within 30s — check signal chain', 'dead');
+  }catch(e){ status('launch failed: '+e.message, 'dead'); }
+  finally{ btn.disabled = false; }
+});
+
+document.getElementById('shutdownbtn').addEventListener('click', async () => {
+  try{
+    const payload = await postJSON('/api/shutdown', {});
+    status(payload.stdout || 'chain stopped', 'ok');
+    tick();
+  }catch(e){ status('shutdown failed: '+e.message, 'dead'); }
 });
 
 document.getElementById('mastergainbtn').addEventListener('click', async () => {

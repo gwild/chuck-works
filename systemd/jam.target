@@ -1,0 +1,12 @@
+[Unit]
+Description=ChucK jam audio chain (jackd-dummy -> chuck-receiver -> gststream-cw)
+Documentation=https://github.com/gwild/chuck-works
+# Starting this target brings up the whole chain in order; stopping it cascades
+# to all three members (they are PartOf= this target). The dashboard's
+# POST /api/launch and /api/shutdown drive this target.
+Wants=jackd-dummy.service chuck-receiver.service gststream-cw.service
+After=jackd-dummy.service chuck-receiver.service gststream-cw.service
+
+# No [Install] WantedBy: on-demand only. The chain stays down after a reboot
+# until launched from the GUI (or `systemctl --user start jam.target`), so
+# bring-up is always an explicit, observable action.

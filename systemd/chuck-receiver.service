@@ -1,0 +1,22 @@
+[Unit]
+Description=ChucK jam receiver (JACK client "ChucK"; OSC on 9000)
+Documentation=https://github.com/gwild/chuck-works
+# Needs JACK up first. BindsTo means if jackd dies this stops too (no zombie
+# receiver hammering a dead server). PartOf ties it to jam.target so
+# `systemctl --user stop jam.target` tears the whole chain down.
+Requires=jackd-dummy.service
+After=jackd-dummy.service
+BindsTo=jackd-dummy.service
+PartOf=jam.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/gregory/chuck-works
+# No driver flag: this ChucK 1.4.2.0 build is "linux (jack)" and defaults to
+# the JACK driver. --driver:JACK is an invalid flag on this version.
+ExecStart=/usr/bin/chuck scripts/chuck_receiver.ck
+Restart=on-failure
+RestartSec=2
+
+# No [Install]: this unit is started only by jam.target, never standalone.
+# That is what stops the historical crash-loop (1293 restarts with no jackd).

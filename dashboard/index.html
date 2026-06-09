@@ -45,14 +45,15 @@
       <label>bars <input id="bars" type="number" min="1" step="1" value="8"></label>
       <label>countin <input id="countin" type="number" min="0" step="1" value="0"></label>
       <button id="startbtn">Start</button>
-      <button id="stopbtn" disabled title="Receiver has no /stop OSC handler yet">Stop</button>
+      <button id="stopbtn">Stop</button>
     </div>
     <div class="row">
       <label>composition <select id="compositions"></select></label>
       <button id="recallbtn">Recall</button>
     </div>
     <div class="row">
-      <button disabled title="Receiver has no /master_gain OSC handler yet">Master gain</button>
+      <label>master gain <input id="mastergain" type="number" min="0" max="1" step="0.01" value="0.85"></label>
+      <button id="mastergainbtn">Apply</button>
       <button disabled title="Receiver has no per-lane mute/gain OSC handlers yet">Lane gain/mute</button>
     </div>
     <div id="actionstatus" class="muted"></div>
@@ -183,6 +184,24 @@ document.getElementById('startbtn').addEventListener('click', async () => {
     status(payload.stdout || 'start sent', 'ok');
     tick();
   }catch(e){ status('start failed: '+e.message, 'dead'); }
+});
+
+document.getElementById('stopbtn').addEventListener('click', async () => {
+  try{
+    const payload = await postJSON('/api/transport/stop', {});
+    status(payload.stdout || 'stop sent', 'ok');
+    tick();
+  }catch(e){ status('stop failed: '+e.message, 'dead'); }
+});
+
+document.getElementById('mastergainbtn').addEventListener('click', async () => {
+  try{
+    const payload = await postJSON('/api/gain/master', {
+      gain: Number(document.getElementById('mastergain').value)
+    });
+    status(payload.stdout || ('master gain '+payload.gain), 'ok');
+    tick();
+  }catch(e){ status('master gain failed: '+e.message, 'dead'); }
 });
 
 document.getElementById('recallbtn').addEventListener('click', async () => {

@@ -183,7 +183,7 @@ class DashboardServerTest(unittest.TestCase):
         self.assertIn("play_composition.py", self.commands[0][1])
         self.assertEqual(Path(self.commands[0][2]).name, "cm7.json")
 
-    def test_unsupported_stop_returns_501(self):
+    def test_post_transport_stop_runs_chuck_send(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
@@ -195,14 +195,86 @@ class DashboardServerTest(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+        self.assertTrue(payload["ok"])
+        self.assertIn("chuck_send.py", self.commands[0][1])
+        self.assertIn("--stop", self.commands[0])
+
+    def test_post_master_gain_runs_chuck_send(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/gain/master",
+                data=json.dumps({"gain": 0.42}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["gain"], 0.42)
+        self.assertIn("chuck_send.py", self.commands[0][1])
+        self.assertIn("--master-gain", self.commands[0])
+        self.assertIn("0.42", self.commands[0])
+
+    def test_post_master_gain_rejects_out_of_range(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/gain/master",
+                data=json.dumps({"gain": 1.5}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 urllib.request.urlopen(req, timeout=5)
+            body = ctx.exception.read().decode("utf-8")
+            ctx.exception.close()
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+        self.assertEqual(ctx.exception.code, 400)
+        self.assertIn("between 0 and 1", json.loads(body)["error"])
+        self.assertEqual(self.commands, [])
+
+    def test_unsupported_lane_gain_returns_501(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/lanes/claude/gain",
+                data=json.dumps({"gain": 0.5}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(req, timeout=5)
+            body = ctx.exception.read().decode("utf-8")
             ctx.exception.close()
         finally:
             httpd.shutdown()
             thread.join(timeout=5)
             httpd.server_close()
         self.assertEqual(ctx.exception.code, 501)
+        self.assertIn("per-lane", json.loads(body)["error"])
 
     def test_unknown_api_get_returns_json_404(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)

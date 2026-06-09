@@ -25,11 +25,15 @@ Endpoints:
                     -> saved composition summaries from compositions/*.json
   POST /api/transport/start
                     -> call scripts/chuck_send.py --start
+  POST /api/transport/stop
+                    -> call scripts/chuck_send.py --stop
+  POST /api/gain/master
+                    -> call scripts/chuck_send.py --master-gain
   POST /api/compositions/<name>/recall
                     -> call scripts/play_composition.py for that manifest
 
 Unsupported receiver controls return 501 until OSC support exists. The GUI must
-never fake stop/gain/mute success.
+never fake per-lane gain/mute success.
 
 The server is SCHEMA-AGNOSTIC: it serves whatever the collector wrote, plus
 the staleness envelope. The renderer (index.html) binds to the agreed schema
@@ -150,6 +154,36 @@ def start_transport(body):
     return {"ok": True, "transport": {"bpm": bpm, "bars": bars, "countin": countin}, "stdout": result.stdout.strip()}
 
 
+def stop_transport():
+    result = run_command([
+        PYTHON,
+        str(REPO_ROOT / "scripts" / "chuck_send.py"),
+        "--stop",
+    ])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"chuck_send exited {result.returncode}")
+    return {"ok": True, "stdout": result.stdout.strip()}
+
+
+def set_master_gain(body):
+    try:
+        gain = float(body["gain"])
+    except KeyError as exc:
+        raise ValueError(f"missing required field: {exc.args[0]}") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError("gain must be numeric") from exc
+    if gain < 0.0 or gain > 1.0:
+        raise ValueError("gain must be between 0 and 1")
+    result = run_command([
+        PYTHON,
+        str(REPO_ROOT / "scripts" / "chuck_send.py"),
+        "--master-gain", str(gain),
+    ])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"chuck_send exited {result.returncode}")
+    return {"ok": True, "gain": gain, "stdout": result.stdout.strip()}
+
+
 def recall_composition(name):
     path = composition_path(name)
     result = run_command([
@@ -206,10 +240,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(start_transport(read_json_body(self))), "application/json")
                 return
             if path == "/api/transport/stop":
-                self._send(501, json.dumps({"ok": False, "error": "receiver has no /stop OSC handler yet"}), "application/json")
+                self._send(200, json.dumps(stop_transport()), "application/json")
                 return
             if path == "/api/gain/master":
-                self._send(501, json.dumps({"ok": False, "error": "receiver has no /master_gain OSC handler yet"}), "application/json")
+                self._send(200, json.dumps(set_master_gain(read_json_body(self))), "application/json")
                 return
             if path.startswith("/api/lanes/") and (path.endswith("/mute") or path.endswith("/gain")):
                 self._send(501, json.dumps({"ok": False, "error": "receiver has no per-lane mute/gain OSC handlers yet"}), "application/json")

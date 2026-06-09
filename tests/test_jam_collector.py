@@ -23,6 +23,7 @@ class JamCollectorIntentTest(unittest.TestCase):
         self.log = Path(self.tmp.name) / "chuck_receiver.log"
         self.collector = load_collector()
         self.collector.RECEIVER_LOG = str(self.log)
+        self.collector.RECEIVER_SOURCE = "file"
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -62,6 +63,37 @@ class JamCollectorIntentTest(unittest.TestCase):
         self.assertEqual(intent["roster"], ["claude"])
         self.assertEqual(intent["bpm"], 172.0)
         self.assertEqual(intent["bars"], 8)
+
+    def test_journal_source_reads_live_receiver_events(self):
+        self.collector.RECEIVER_SOURCE = "journal"
+
+        def fake_journal():
+            return int(time.time()), [
+                "[chuck_receiver] START: bpm 172.000000 tpb 480 bars 8 countin 0",
+                "[chuck_receiver] Playing phrase from acid",
+                "[chuck_receiver] Playing phrase from sub",
+            ]
+
+        self.collector._receiver_journal_lines = fake_journal
+
+        intent = self.collector.read_intent()
+
+        self.assertTrue(intent["transport_running"])
+        self.assertEqual(intent["source"], "receiver_journal")
+        self.assertEqual(intent["roster"], ["acid", "sub"])
+        self.assertEqual(intent["bpm"], 172.0)
+        self.assertEqual(intent["bars"], 8)
+
+    def test_journal_source_failure_is_visible(self):
+        self.collector.RECEIVER_SOURCE = "journal"
+
+        def broken_journal():
+            raise RuntimeError("journalctl failed for chuck-receiver.service: denied")
+
+        self.collector._receiver_journal_lines = broken_journal
+
+        with self.assertRaisesRegex(RuntimeError, "journalctl failed"):
+            self.collector.read_intent()
 
 
 if __name__ == "__main__":

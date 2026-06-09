@@ -70,6 +70,7 @@ PHRASE_FRESH_SECS = float(_env("JAM_PHRASE_FRESH_SECS", "30"))
 BEATS_PER_BAR = int(_env("JAM_BEATS_PER_BAR", "4"))
 
 _START_RE = re.compile(r"START: bpm ([\d.]+) tpb (\d+) bars (\d+) countin (\d+)")
+_STOP_RE = re.compile(r"STOP: transport gen")
 _PHRASE_RE = re.compile(r"Playing phrase from ([\w.-]+)")
 # "Loaded phrase from <name> : <instrument> rev <N> <notes> notes" — carries the
 # per-lane instrument+rev that a name-only roster can't show. This is what makes
@@ -135,6 +136,14 @@ def read_intent():
     except OSError:
         return intent
 
+    last_start_idx = None
+    last_stop_idx = None
+    for idx, line in enumerate(lines):
+        if _START_RE.search(line):
+            last_start_idx = idx
+        if _STOP_RE.search(line):
+            last_stop_idx = idx
+
     for line in reversed(lines):
         m = _START_RE.search(line)
         if m:
@@ -143,19 +152,28 @@ def read_intent():
             intent["bars"] = int(m.group(3))
             break
 
+    stopped = (
+        last_stop_idx is not None
+        and (last_start_idx is None or last_stop_idx > last_start_idx)
+    )
+
+    active_lines = lines[last_start_idx:] if last_start_idx is not None else lines
+
     # Roster = distinct agents in the current cycle when it has started, falling
     # back to the last complete cycle. After a receiver restart on a long piece
     # (for example 96 bars at 60 bpm), waiting for two `Cycle complete` markers
     # would make intent read empty for the whole first multi-minute cycle even
     # while audio is flowing.
-    cycle_idxs = [i for i, ln in enumerate(lines) if _CYCLE_RE.search(ln)]
-    if cycle_idxs and any(_PHRASE_RE.search(ln) for ln in lines[cycle_idxs[-1]:]):
-        window = lines[cycle_idxs[-1]:]
+    cycle_idxs = [i for i, ln in enumerate(active_lines) if _CYCLE_RE.search(ln)]
+    if stopped:
+        window = []
+    elif cycle_idxs and any(_PHRASE_RE.search(ln) for ln in active_lines[cycle_idxs[-1]:]):
+        window = active_lines[cycle_idxs[-1]:]
     elif len(cycle_idxs) >= 2:
         lo, hi = cycle_idxs[-2], cycle_idxs[-1]
-        window = lines[lo:hi]
+        window = active_lines[lo:hi]
     else:
-        window = lines[cycle_idxs[-1]:] if cycle_idxs else lines
+        window = active_lines[cycle_idxs[-1]:] if cycle_idxs else active_lines
     roster = []
     for ln in window:
         m = _PHRASE_RE.search(ln)
@@ -196,7 +214,7 @@ def read_intent():
     if intent["bpm"] and intent["bars"]:
         intent["cycle_secs"] = round(intent["bars"] * BEATS_PER_BAR * 60.0 / intent["bpm"], 1)
         window = max(PHRASE_FRESH_SECS, intent["cycle_secs"] * 1.5)
-    intent["transport_running"] = age <= window and bool(roster)
+    intent["transport_running"] = (not stopped) and age <= window and bool(roster)
     return intent
 
 

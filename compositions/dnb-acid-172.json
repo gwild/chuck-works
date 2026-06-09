@@ -8,6 +8,10 @@
     "bars": 4,
     "countin": 0
   },
+  "peak_target": {
+    "max": 0.4,
+    "min": 0.03
+  },
   "voices": [
     {
       "agent": "acid",

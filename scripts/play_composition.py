@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -84,6 +86,18 @@ def load_manifest(path: Path) -> dict:
     t = data["transport"]
     if not isinstance(t, dict) or "bpm" not in t or "bars" not in t:
         _die("transport must be an object with at least bpm + bars")
+    # Optional headroom contract (Jan's #17 review): a bounded peak target the
+    # full-mix capture must land in, so a later note/gain edit that blows
+    # headroom fails loud instead of re-triggering the "too hot / did it
+    # change?" loop. {"max": 0.5} ceiling; optional "min" silence floor.
+    if "peak_target" in data:
+        pt = data["peak_target"]
+        if not isinstance(pt, dict) or "max" not in pt:
+            _die("peak_target must be an object with at least a 'max'")
+        if not (0.0 < float(pt["max"]) <= 1.0):
+            _die(f"peak_target.max must be in (0,1]: {pt['max']}")
+        if "min" in pt and not (0.0 <= float(pt["min"]) < float(pt["max"])):
+            _die(f"peak_target.min must be in [0, max): {pt['min']}")
     voices = data["voices"]
     if not isinstance(voices, list) or not voices:
         _die("voices must be a non-empty list")
@@ -138,6 +152,42 @@ def play(manifest: dict, host: str, port: int, settle: float) -> None:
     print(f"played '{manifest['name']}': {len(manifest['voices'])} voices")
 
 
+def check_peak(manifest: dict, capture_secs: float) -> None:
+    """Capture the live ChucK mix (jack_rec + sox) after playing and assert it
+    lands in the manifest's peak_target. The headroom RECEIPT (Jan's #17
+    review): turns "it sounded fine" into a pass/fail gate, same shape as the
+    dashboard green-ready check. Beelink-only (needs jack_rec + sox); fail loud
+    if either is missing or the manifest declares no target."""
+    if "peak_target" not in manifest:
+        _die("--check-peak needs a peak_target in the manifest")
+    pt = manifest["peak_target"]
+    ceil = float(pt["max"])
+    floor = float(pt["min"]) if "min" in pt else 0.0
+    for tool in ("jack_rec", "sox"):
+        if shutil.which(tool) is None:
+            _die(f"--check-peak needs {tool} on PATH (run on beelink)")
+    wav = "/tmp/play_composition_peakcheck.wav"
+    subprocess.run(["jack_rec", "-f", wav, "-d", str(capture_secs),
+                    "ChucK:outport 0", "ChucK:outport 1"],
+                   check=False, capture_output=True)
+    time.sleep(capture_secs + 0.4)
+    out = subprocess.run(["sox", wav, "-n", "stat"], capture_output=True, text=True)
+    peak = None
+    for line in out.stderr.splitlines():
+        if "Maximum amplitude" in line:
+            try:
+                peak = abs(float(line.split(":")[1].strip()))
+            except (IndexError, ValueError):
+                pass
+    if peak is None:
+        _die(f"--check-peak: could not read peak from sox (capture failed?): {out.stderr.strip()[:200]}")
+    if peak > ceil:
+        _die(f"PEAK CONTRACT FAILED: '{manifest['name']}' mix peak {peak:.3f} > target max {ceil} (too hot)")
+    if peak < floor:
+        _die(f"PEAK CONTRACT FAILED: '{manifest['name']}' mix peak {peak:.3f} < floor {floor} (silent/thin)")
+    print(f"peak OK: '{manifest['name']}' mix peak {peak:.3f} within [{floor}, {ceil}]")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Play a ChucK composition manifest.")
     ap.add_argument("manifest", help="path to compositions/<name>.json")
@@ -147,6 +197,11 @@ def main() -> None:
                     help="seconds between per-voice sends (intake pacing)")
     ap.add_argument("--validate-only", action="store_true",
                     help="load + validate the manifest, send nothing")
+    ap.add_argument("--check-peak", action="store_true",
+                    help="after playing, capture the mix and assert it meets "
+                         "the manifest peak_target (beelink-only; jack_rec+sox)")
+    ap.add_argument("--capture-secs", type=float, default=3.0,
+                    help="seconds to capture for --check-peak")
     args = ap.parse_args()
     manifest = load_manifest(Path(args.manifest))
     if args.validate_only:
@@ -155,6 +210,9 @@ def main() -> None:
               f"{manifest['transport']['bpm']} bpm / {manifest['transport']['bars']} bars")
         return
     play(manifest, args.host, args.port, args.settle)
+    if args.check_peak:
+        time.sleep(args.capture_secs)  # let the loop fill before measuring
+        check_peak(manifest, args.capture_secs)
 
 
 if __name__ == "__main__":

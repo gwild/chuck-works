@@ -68,6 +68,35 @@
     <div id="actionstatus" class="muted"></div>
   </div>
 
+  <h1>synth voice <span class="muted">— modular signal-insert (#2449)</span></h1>
+  <div class="panel">
+    <div class="row">
+      <label>agent <input id="sv_agent" type="text" value="probe" style="width:120px"></label>
+      <label>waveform <select id="sv_wave">
+        <option value="sine">sine</option><option value="saw" selected>saw</option>
+        <option value="tri">tri</option><option value="square">square</option>
+      </select></label>
+      <label>gain <input id="sv_gain" type="number" min="0" max="1" step="0.01" value="0.8"></label>
+      <label>pan <input id="sv_pan" type="number" min="-1" max="1" step="0.05" value="0"></label>
+      <label>detune¢ <input id="sv_detune" type="number" min="-1200" max="1200" step="1" value="0"></label>
+    </div>
+    <div class="row">
+      <label>attack s <input id="sv_a" type="number" min="0" max="5" step="0.01" value="0.01"></label>
+      <label>decay s <input id="sv_d" type="number" min="0" max="5" step="0.01" value="0.1"></label>
+      <label>sustain <input id="sv_s" type="number" min="0" max="1" step="0.01" value="0.7"></label>
+      <label>release s <input id="sv_r" type="number" min="0" max="5" step="0.01" value="0.3"></label>
+      <label>test notes <input id="sv_notes" type="text" value="60,0.8,0,480;67,0.8,480,480" style="width:200px"></label>
+      <button id="sv_insertbtn">Insert voice</button>
+    </div>
+    <div class="row">
+      <label>preset name <input id="sv_presetname" type="text" value="" style="width:140px"></label>
+      <button id="sv_savebtn">Save preset</button>
+      <label>preset <select id="sv_presets"></select></label>
+      <button id="sv_recallbtn">Recall</button>
+    </div>
+    <div id="sv_status" class="muted"></div>
+  </div>
+
   <h1>transport</h1>
   <div id="transport" class="muted">—</div>
 
@@ -261,7 +290,67 @@ document.getElementById('recallbtn').addEventListener('click', async () => {
   }catch(e){ status('recall failed: '+e.message, 'dead'); }
 });
 
+// ── synth voice panel (#2449) ──
+function svstatus(msg, kind='muted'){ const el=document.getElementById('sv_status'); el.className=kind; el.textContent=msg; }
+function svSynth(){
+  return {
+    waveform: document.getElementById('sv_wave').value,
+    gain: Number(document.getElementById('sv_gain').value),
+    pan: Number(document.getElementById('sv_pan').value),
+    adsr: {
+      a: Number(document.getElementById('sv_a').value),
+      d: Number(document.getElementById('sv_d').value),
+      s: Number(document.getElementById('sv_s').value),
+      r: Number(document.getElementById('sv_r').value)
+    },
+    detune: Number(document.getElementById('sv_detune').value)
+  };
+}
+async function loadPresets(){
+  const select = document.getElementById('sv_presets');
+  try{
+    const payload = await getJSON('/api/presets');
+    const items = payload.presets || [];
+    select.innerHTML = items.length ? items.map(p =>
+      `<option value="${esc(p.name)}">${esc(p.title || p.name)}</option>`).join('')
+      : '<option value="">(no presets)</option>';
+  }catch(e){
+    select.innerHTML = '<option value="">(preset list failed)</option>';
+    svstatus('preset list failed: '+e.message, 'dead');
+  }
+}
+document.getElementById('sv_insertbtn').addEventListener('click', async () => {
+  try{
+    const body = { agent: document.getElementById('sv_agent').value, synth: svSynth() };
+    const notes = document.getElementById('sv_notes').value.trim();
+    if(notes) body.notes = notes;
+    const payload = await postJSON('/api/voices/insert', body);
+    svstatus(payload.stdout || ('voice inserted on '+payload.agent), 'ok');
+    tick();
+  }catch(e){ svstatus('insert failed: '+e.message, 'dead'); }
+});
+document.getElementById('sv_savebtn').addEventListener('click', async () => {
+  const name = document.getElementById('sv_presetname').value.trim();
+  if(!name){ svstatus('enter a preset name', 'warn'); return; }
+  try{
+    await postJSON('/api/presets', { name: name, title: name, synth: svSynth() });
+    svstatus('saved preset '+name, 'ok');
+    loadPresets();
+  }catch(e){ svstatus('save failed: '+e.message, 'dead'); }
+});
+document.getElementById('sv_recallbtn').addEventListener('click', async () => {
+  const name = document.getElementById('sv_presets').value;
+  if(!name){ svstatus('no preset selected', 'warn'); return; }
+  try{
+    const payload = await postJSON('/api/presets/'+encodeURIComponent(name)+'/recall',
+                                   { agent: document.getElementById('sv_agent').value });
+    svstatus(payload.stdout || ('recalled '+name+' onto '+payload.agent), 'ok');
+    tick();
+  }catch(e){ svstatus('preset recall failed: '+e.message, 'dead'); }
+});
+
 loadCompositions();
+loadPresets();
 tick(); setInterval(tick, 2000);
 </script>
 </body>

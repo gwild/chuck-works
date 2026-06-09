@@ -34,6 +34,11 @@ Endpoints:
                     -> call scripts/chuck_send.py --master-gain
   POST /api/compositions/<name>/recall
                     -> call scripts/play_composition.py for that manifest
+  POST /api/voices/insert
+                    -> chuck_send.py --voice (parametric voice, #2449); optional
+                       notes also loads a test phrase
+  GET  /api/presets / POST /api/presets / POST /api/presets/<name>/recall
+                    -> list / save (presets/<name>.json) / send a saved voice
 
 Unsupported receiver controls return 501 until OSC support exists. The GUI must
 never fake per-lane gain/mute success.
@@ -59,6 +64,7 @@ STATE_FILE = os.environ.get(
     "STATE_FILE", str(REPO_ROOT / "data" / "jam-state.json")
 )
 COMPOSITIONS_DIR = Path(os.environ.get("COMPOSITIONS_DIR", str(REPO_ROOT / "compositions")))
+PRESETS_DIR = Path(os.environ.get("PRESETS_DIR", str(REPO_ROOT / "presets")))
 PORT = int(os.environ.get("PORT", "8092"))
 TITLE = os.environ.get("TITLE", "chuck-works")
 STALE_SECS = float(os.environ.get("STALE_SECS", "30"))
@@ -231,6 +237,140 @@ def recall_composition(name):
     return {"ok": True, "name": name, "stdout": result.stdout.strip()}
 
 
+# ── Parametric voice (#2449) ────────────────────────────────────────
+# Waveforms must match chuck_send.VOICE_WAVEFORMS / chuck_receiver.ck handleVoice.
+VOICE_WAVEFORMS = ("sine", "saw", "tri", "square")
+
+
+def validate_synth(s):
+    """Validate a synth spec dict {waveform, gain, pan, adsr:{a,d,s,r}, detune?}.
+    Raises ValueError (→ HTTP 400) on any defect. Same range contract as the
+    sender CLI + receiver clamps; we reject rather than clamp so the GUI gets a
+    clear error instead of a silently-altered voice."""
+    if not isinstance(s, dict):
+        raise ValueError("synth must be an object")
+    if s.get("waveform") not in VOICE_WAVEFORMS:
+        raise ValueError(f"synth.waveform must be one of {list(VOICE_WAVEFORMS)}")
+    try:
+        gain = float(s["gain"])
+        pan = float(s["pan"])
+        adsr = s["adsr"]
+        a = float(adsr["a"])
+        d = float(adsr["d"])
+        sus = float(adsr["s"])
+        r = float(adsr["r"])
+        detune = float(s["detune"]) if "detune" in s else 0.0
+    except KeyError as exc:
+        raise ValueError(f"synth missing field: {exc.args[0]}") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"synth fields must be numeric: {exc}") from exc
+    if not (0.0 <= gain <= 1.0):
+        raise ValueError("synth.gain must be between 0 and 1")
+    if not (-1.0 <= pan <= 1.0):
+        raise ValueError("synth.pan must be between -1 and 1")
+    for nm, val in (("attack", a), ("decay", d), ("release", r)):
+        if not (0.0 <= val <= 5.0):
+            raise ValueError(f"synth.adsr.{nm} must be between 0 and 5 seconds")
+    if not (0.0 <= sus <= 1.0):
+        raise ValueError("synth.adsr.s (sustain) must be between 0 and 1")
+    if not (-1200.0 <= detune <= 1200.0):
+        raise ValueError("synth.detune must be between -1200 and 1200 cents")
+    return {"waveform": s["waveform"], "gain": gain, "pan": pan,
+            "adsr": {"a": a, "d": d, "s": sus, "r": r}, "detune": detune}
+
+
+def _voice_argv(agent, s):
+    """chuck_send.py --voice argv for a validated synth spec onto `agent`."""
+    a = s["adsr"]
+    return [
+        PYTHON, str(REPO_ROOT / "scripts" / "chuck_send.py"),
+        "--voice", "--agent", agent,
+        "--waveform", s["waveform"],
+        "--voice-gain", str(s["gain"]), "--voice-pan", str(s["pan"]),
+        "--attack", str(a["a"]), "--decay", str(a["d"]),
+        "--sustain", str(a["s"]), "--release", str(a["r"]),
+        "--detune", str(s["detune"]),
+    ]
+
+
+def insert_voice(body):
+    """POST /api/voices/insert — configure an agent's parametric voice live, and
+    optionally load a test phrase in the same call (notes)."""
+    agent = body.get("agent")
+    if not agent or not isinstance(agent, str) or not NAME_RE.match(agent):
+        raise ValueError("agent must be a name of letters, numbers, dot, underscore, or hyphen")
+    if "synth" not in body:
+        raise ValueError("missing required field: synth")
+    s = validate_synth(body["synth"])
+    argv = _voice_argv(agent, s)
+    if body.get("notes"):
+        argv += ["--instrument", str(body.get("instrument") or s["waveform"]), "--notes", str(body["notes"])]
+    result = run_command(argv)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"chuck_send exited {result.returncode}")
+    return {"ok": True, "agent": agent, "synth": s, "stdout": result.stdout.strip()}
+
+
+def preset_path(name):
+    if not NAME_RE.match(name):
+        raise ValueError("preset name must use only letters, numbers, dot, underscore, or hyphen")
+    return PRESETS_DIR / f"{name}.json"
+
+
+def load_preset(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path.name}: unreadable preset: {exc}") from exc
+    if not isinstance(data, dict) or "synth" not in data:
+        raise ValueError(f"{path.name}: preset must be an object with a synth")
+    name = data.get("name") or path.stem
+    title = data.get("title") or name
+    return {"name": name, "title": title, "synth": validate_synth(data["synth"])}
+
+
+def list_presets():
+    items = []
+    if PRESETS_DIR.exists():
+        for path in sorted(PRESETS_DIR.glob("*.json")):
+            items.append(load_preset(path))
+    return {"presets": items}
+
+
+def save_preset(body):
+    """POST /api/presets — write presets/<name>.json (the server's only file
+    write). Strict NAME_RE guards path traversal; written atomically via a temp
+    file + os.replace so a crash mid-write never leaves a half preset."""
+    name = body.get("name")
+    if not name or not isinstance(name, str):
+        raise ValueError("missing required field: name")
+    path = preset_path(name)
+    if "synth" not in body:
+        raise ValueError("missing required field: synth")
+    s = validate_synth(body["synth"])
+    doc = {"preset_version": 1, "name": name, "title": body.get("title") or name, "synth": s}
+    PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return {"ok": True, "name": name, "synth": s}
+
+
+def recall_preset(name, body):
+    """POST /api/presets/<name>/recall — send the saved voice onto an agent."""
+    path = preset_path(name)
+    if not path.exists():
+        raise FileNotFoundError(f"preset not found: {name}")
+    preset = load_preset(path)
+    agent = body.get("agent")
+    if not agent or not isinstance(agent, str) or not NAME_RE.match(agent):
+        raise ValueError("agent must be a name of letters, numbers, dot, underscore, or hyphen")
+    result = run_command(_voice_argv(agent, preset["synth"]))
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"chuck_send exited {result.returncode}")
+    return {"ok": True, "name": name, "agent": agent, "stdout": result.stdout.strip()}
+
+
 def launch_chain():
     """Bring up the whole audio chain (jackd -> ChucK -> GStreamer -> Icecast)
     via systemd. jam.target orders jackd-dummy.service, chuck-receiver.service
@@ -326,6 +466,12 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send(500, dump_json({"ok": False, "error": str(exc)}), "application/json")
             return
+        if path in ("/api/presets", "/api/presets/"):
+            try:
+                self._send(200, dump_json(list_presets()), "application/json")
+            except ValueError as exc:
+                self._send(500, dump_json({"ok": False, "error": str(exc)}), "application/json")
+            return
         if path == "/" or path == "/index.html":
             try:
                 with open(HERE / "index.html", "rb") as f:
@@ -355,6 +501,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/gain/master":
                 self._send(200, dump_json(set_master_gain(read_json_body(self))), "application/json")
+                return
+            if path == "/api/voices/insert":
+                self._send(200, dump_json(insert_voice(read_json_body(self))), "application/json")
+                return
+            preset_prefix = "/api/presets/"
+            preset_suffix = "/recall"
+            if path.startswith(preset_prefix) and path.endswith(preset_suffix):
+                name = unquote(path[len(preset_prefix):-len(preset_suffix)])
+                self._send(200, dump_json(recall_preset(name, read_json_body(self))), "application/json")
+                return
+            if path == "/api/presets":
+                self._send(200, dump_json(save_preset(read_json_body(self))), "application/json")
                 return
             if path.startswith("/api/lanes/") and (path.endswith("/mute") or path.endswith("/gain")):
                 self._send(501, dump_json({"ok": False, "error": "receiver has no per-lane mute/gain OSC handlers yet"}), "application/json")

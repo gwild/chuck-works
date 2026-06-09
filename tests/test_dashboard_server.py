@@ -34,9 +34,12 @@ class DashboardServerTest(unittest.TestCase):
         self.state_file = Path(self.tmp.name) / "jam-state.json"
         self.compositions_dir = Path(self.tmp.name) / "compositions"
         self.compositions_dir.mkdir()
+        self.presets_dir = Path(self.tmp.name) / "presets"
+        self.presets_dir.mkdir()
         self.server = load_server()
         self.server.STATE_FILE = str(self.state_file)
         self.server.COMPOSITIONS_DIR = self.compositions_dir
+        self.server.PRESETS_DIR = self.presets_dir
         self.server.STALE_SECS = 30
         self.commands = []
         self.server.run_command = self.fake_run_command
@@ -165,18 +168,26 @@ class DashboardServerTest(unittest.TestCase):
 
     # --- /api/launch + /api/shutdown drive systemctl jam.target ---
 
-    def _post(self, path):
+    def _post(self, path, body=None, expect_status=None):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         try:
             port = httpd.server_address[1]
+            data = b"{}" if body is None else json.dumps(body).encode("utf-8")
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}{path}", data=b"{}",
+                f"http://127.0.0.1:{port}{path}", data=data,
                 headers={"Content-Type": "application/json"}, method="POST",
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if expect_status is not None:
+                        self.assertEqual(resp.status, expect_status)
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                if expect_status is not None:
+                    self.assertEqual(e.code, expect_status)
+                return json.loads(e.read().decode("utf-8"))
         finally:
             httpd.shutdown()
             thread.join(timeout=5)
@@ -191,6 +202,73 @@ class DashboardServerTest(unittest.TestCase):
         payload = self._post("/api/shutdown")
         self.assertTrue(payload["ok"])
         self.assertEqual(self.commands[0], ["systemctl", "--user", "stop", "jam.target"])
+
+    # --- parametric voice (#2449) ---
+
+    _SYNTH = {"waveform": "saw", "gain": 0.8, "pan": 0.0,
+              "adsr": {"a": 0.01, "d": 0.1, "s": 0.7, "r": 0.3}, "detune": 0.0}
+
+    def test_post_voices_insert_runs_chuck_send(self):
+        payload = self._post("/api/voices/insert", {"agent": "probe", "synth": self._SYNTH})
+        self.assertTrue(payload["ok"])
+        argv = self.commands[0]
+        self.assertIn("--voice", argv)
+        self.assertIn("--agent", argv)
+        self.assertEqual(argv[argv.index("--waveform") + 1], "saw")
+        self.assertEqual(argv[argv.index("--attack") + 1], "0.01")
+        self.assertNotIn("--notes", argv)
+
+    def test_post_voices_insert_with_notes_also_loads(self):
+        payload = self._post("/api/voices/insert",
+                             {"agent": "probe", "synth": self._SYNTH, "notes": "60,0.8,0,480"})
+        self.assertTrue(payload["ok"])
+        argv = self.commands[0]
+        self.assertIn("--notes", argv)
+        self.assertEqual(argv[argv.index("--notes") + 1], "60,0.8,0,480")
+
+    def test_post_voices_insert_rejects_out_of_range(self):
+        bad = dict(self._SYNTH, gain=1.5)
+        payload = self._post("/api/voices/insert", {"agent": "probe", "synth": bad}, expect_status=400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(self.commands, [])
+
+    def test_post_voices_insert_rejects_bad_agent(self):
+        payload = self._post("/api/voices/insert", {"agent": "../etc", "synth": self._SYNTH}, expect_status=400)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(self.commands, [])
+
+    def test_preset_save_then_list_then_recall(self):
+        save = self._post("/api/presets", {"name": "warm-saw", "title": "Warm Saw", "synth": self._SYNTH})
+        self.assertTrue(save["ok"])
+        self.assertTrue((self.presets_dir / "warm-saw.json").exists())
+        # GET list
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = httpd.server_address[1]
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/presets", timeout=5) as resp:
+                listing = json.loads(resp.read().decode("utf-8"))
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+            httpd.server_close()
+        self.assertEqual(listing["presets"][0]["name"], "warm-saw")
+        # recall onto an agent
+        rec = self._post("/api/presets/warm-saw/recall", {"agent": "lead"})
+        self.assertTrue(rec["ok"])
+        argv = self.commands[0]
+        self.assertIn("--voice", argv)
+        self.assertEqual(argv[argv.index("--agent") + 1], "lead")
+        self.assertEqual(argv[argv.index("--waveform") + 1], "saw")
+
+    def test_preset_save_rejects_bad_name(self):
+        payload = self._post("/api/presets", {"name": "../evil", "synth": self._SYNTH}, expect_status=400)
+        self.assertFalse(payload["ok"])
+
+    def test_preset_recall_missing_is_404(self):
+        payload = self._post("/api/presets/nope/recall", {"agent": "lead"}, expect_status=404)
+        self.assertFalse(payload["ok"])
 
     def test_api_compositions_lists_manifest_summaries(self):
         (self.compositions_dir / "cm7.json").write_text(json.dumps({

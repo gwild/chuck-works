@@ -206,6 +206,19 @@ def stop_transport():
     return {"ok": True, "stdout": result.stdout.strip()}
 
 
+def clear_roster():
+    """Empty the receiver roster (#2456) — wipe all loaded voices to silence so
+    the next composition REPLACES rather than stacks."""
+    result = run_command([
+        PYTHON,
+        str(REPO_ROOT / "scripts" / "chuck_send.py"),
+        "--clear",
+    ])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"chuck_send exited {result.returncode}")
+    return {"ok": True, "stdout": result.stdout.strip()}
+
+
 def set_master_gain(body):
     try:
         gain = float(body["gain"])
@@ -227,6 +240,10 @@ def set_master_gain(body):
 
 def recall_composition(name):
     path = composition_path(name)
+    # Clear the roster FIRST so recalling a song REPLACES the current one rather
+    # than stacking its voices on top (#2456 — different songs use different
+    # agent names, which never overwrite each other's slots).
+    clear_roster()
     result = run_command([
         PYTHON,
         str(REPO_ROOT / "scripts" / "play_composition.py"),
@@ -492,6 +509,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/transport/stop":
                 self._send(200, dump_json(stop_transport()), "application/json")
+                return
+            if path == "/api/clear":
+                self._send(200, dump_json(clear_roster()), "application/json")
                 return
             if path == "/api/launch":
                 self._send(200, dump_json(launch_chain()), "application/json")

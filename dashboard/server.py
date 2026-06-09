@@ -63,6 +63,32 @@ PYTHON = os.environ.get("PYTHON", sys.executable)
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+def _finite(value):
+    """Recursively replace non-finite floats (NaN, inf, -inf) with None.
+
+    The collector legitimately emits NaN for a metric with no valid samples
+    (e.g. jack.rms before audio flows). json.dumps' default allow_nan=True
+    then serializes a bare `NaN`, which is NOT valid JSON: the browser's
+    JSON.parse rejects the whole document and the GUI goes blank. allow_nan
+    is therefore False below, but that RAISES on a non-finite float — and
+    observability must never crash on bad input — so we sanitize first.
+    null is the right wire value: "no reading", which the renderer already
+    handles (gmixer.peak is already null when absent).
+    """
+    if isinstance(value, float):
+        return value if value == value and value not in (float("inf"), float("-inf")) else None
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_finite(v) for v in value]
+    return value
+
+
+def dump_json(obj):
+    """json.dumps that always produces valid JSON (no bare NaN/Infinity)."""
+    return json.dumps(_finite(obj), allow_nan=False)
+
+
 def run_command(argv):
     return subprocess.run(argv, cwd=str(REPO_ROOT), capture_output=True, text=True)
 
@@ -213,13 +239,13 @@ class Handler(BaseHTTPRequestHandler):
             envelope = dict(state)
             envelope["_age_secs"] = round(age, 1) if age is not None else None
             envelope["_stale"] = stale
-            self._send(200, json.dumps(envelope), "application/json")
+            self._send(200, dump_json(envelope), "application/json")
             return
         if path in ("/api/compositions", "/api/compositions/"):
             try:
-                self._send(200, json.dumps(list_compositions()), "application/json")
+                self._send(200, dump_json(list_compositions()), "application/json")
             except ValueError as exc:
-                self._send(500, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+                self._send(500, dump_json({"ok": False, "error": str(exc)}), "application/json")
             return
         if path == "/" or path == "/index.html":
             try:
@@ -229,7 +255,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, f"index.html missing: {exc}", "text/plain")
             return
         if path.startswith("/api/"):
-            self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
+            self._send(404, dump_json({"ok": False, "error": "not found"}), "application/json")
             return
         self._send(404, "not found", "text/plain")
 
@@ -237,34 +263,34 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         try:
             if path == "/api/transport/start":
-                self._send(200, json.dumps(start_transport(read_json_body(self))), "application/json")
+                self._send(200, dump_json(start_transport(read_json_body(self))), "application/json")
                 return
             if path == "/api/transport/stop":
-                self._send(200, json.dumps(stop_transport()), "application/json")
+                self._send(200, dump_json(stop_transport()), "application/json")
                 return
             if path == "/api/gain/master":
-                self._send(200, json.dumps(set_master_gain(read_json_body(self))), "application/json")
+                self._send(200, dump_json(set_master_gain(read_json_body(self))), "application/json")
                 return
             if path.startswith("/api/lanes/") and (path.endswith("/mute") or path.endswith("/gain")):
-                self._send(501, json.dumps({"ok": False, "error": "receiver has no per-lane mute/gain OSC handlers yet"}), "application/json")
+                self._send(501, dump_json({"ok": False, "error": "receiver has no per-lane mute/gain OSC handlers yet"}), "application/json")
                 return
             prefix = "/api/compositions/"
             suffix = "/recall"
             if path.startswith(prefix) and path.endswith(suffix):
                 name = unquote(path[len(prefix):-len(suffix)])
-                self._send(200, json.dumps(recall_composition(name)), "application/json")
+                self._send(200, dump_json(recall_composition(name)), "application/json")
                 return
         except FileNotFoundError as exc:
-            self._send(404, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            self._send(404, dump_json({"ok": False, "error": str(exc)}), "application/json")
             return
         except ValueError as exc:
-            self._send(400, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            self._send(400, dump_json({"ok": False, "error": str(exc)}), "application/json")
             return
         except RuntimeError as exc:
-            self._send(500, json.dumps({"ok": False, "error": str(exc)}), "application/json")
+            self._send(500, dump_json({"ok": False, "error": str(exc)}), "application/json")
             return
         if path.startswith("/api/"):
-            self._send(404, json.dumps({"ok": False, "error": "not found"}), "application/json")
+            self._send(404, dump_json({"ok": False, "error": "not found"}), "application/json")
             return
         self._send(404, "not found", "text/plain")
 

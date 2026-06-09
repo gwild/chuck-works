@@ -1,0 +1,55 @@
+{
+  "manifest_version": 1,
+  "name": "dub-in-cm-70",
+  "title": "Dub in Cm @ 70 — modal dub, movement by subtraction",
+  "source_score": "compositions/dub-in-cm-70.md",
+  "transport": {
+    "bpm": 70,
+    "bars": 8,
+    "countin": 0
+  },
+  "voices": [
+    {
+      "agent": "claude",
+      "instrument": "sine",
+      "revision": 1,
+      "pan": 0.0,
+      "notes": "36,0.5,0,1440;36,0.5,3840,1440;36,0.5,7680,1440;36,0.5,11520,1440;48,0.4,1920,960;48,0.4,9600,960"
+    },
+    {
+      "agent": "windy",
+      "instrument": "mandolin",
+      "revision": 1,
+      "pan": -0.5,
+      "notes": "48,0.26,0,1920;51,0.26,1920,1920;55,0.26,3840,1920;53,0.26,5760,1920;48,0.26,7680,1920;56,0.26,9600,1920;55,0.26,11520,1920;51,0.26,13440,1920"
+    },
+    {
+      "agent": "windy2",
+      "instrument": "mandolin",
+      "revision": 1,
+      "pan": 0.5,
+      "notes": "67,0.2,1920,1440;70,0.2,5760,1440;67,0.2,9600,1440;63,0.2,13440,1440"
+    },
+    {
+      "agent": "windy-hat",
+      "instrument": "hat",
+      "revision": 1,
+      "pan": 0.2,
+      "notes": "70,0.3,960,240;70,0.3,2880,240;70,0.3,4800,240;70,0.3,6720,240;70,0.3,8640,240;70,0.35,12480,480"
+    },
+    {
+      "agent": "windy-sweep",
+      "instrument": "sweep",
+      "revision": 1,
+      "pan": 0.0,
+      "notes": "48,0.22,0,15360"
+    },
+    {
+      "agent": "windy-chime",
+      "instrument": "modalbar",
+      "revision": 1,
+      "pan": 0.35,
+      "notes": "96,0.3,9600,1920"
+    }
+  ]
+}

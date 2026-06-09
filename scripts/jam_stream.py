@@ -7,11 +7,25 @@ Runs on beelink. Connects gststream's jack input ports to ChucK:outport 0/1.
 """
 import subprocess
 import sys
+import os
 import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst, GLib
 
 Gst.init(None)
+
+# Post-mix make-up gain into the encoder. The OLD value was 4.0 to compensate
+# for a then-conservative ChucK master.gain (0.6); master is now 0.85 and the
+# receiver applies per-voice gains, so 4.0 drove /jam.mp3 to clipping/distortion
+# (mount RMS ~0.92, Gregory #2494). Default 1.5 keeps a full mix in safe
+# headroom; master gain (OSC /master_gain) is the real loudness control. Tune
+# via JAM_STREAM_BOOST without editing code.
+try:
+    BOOST = float(os.environ.get("JAM_STREAM_BOOST", "1.5"))
+except ValueError:
+    sys.exit("FATAL jam_stream: JAM_STREAM_BOOST must be a number")
+if BOOST <= 0.0:
+    sys.exit("FATAL jam_stream: JAM_STREAM_BOOST must be > 0")
 
 # Pull the source-password out of icecast.xml without ever putting it in argv.
 pw = subprocess.check_output(
@@ -22,7 +36,7 @@ pw = subprocess.check_output(
 pipeline = Gst.parse_launch(
     "jackaudiosrc client-name=gststream connect=none ! "
     "audioconvert ! audioresample ! audio/x-raw,rate=44100,channels=2 ! "
-    "volume volume=4.0 ! "  # downstream boost: ChucK master.gain is conservative (0.6)
+    f"volume volume={BOOST} ! "
     "queue ! lamemp3enc target=bitrate bitrate=128 cbr=true ! "
     "shout2send name=cast ip=127.0.0.1 port=8080 mount=/jam.mp3"
 )

@@ -243,10 +243,11 @@ document.getElementById('shutdownbtn').addEventListener('click', async () => {
 
 document.getElementById('mastergainbtn').addEventListener('click', async () => {
   try{
-    const payload = await postJSON('/api/gain/master', {
-      gain: Number(document.getElementById('mastergain').value)
-    });
-    status(payload.stdout || ('master gain '+payload.gain), 'ok');
+    const g = Number(document.getElementById('mastergain').value);
+    const payload = await postJSON('/api/gain/master', { gain: g });
+    // The receiver applies it immediately; the chain meters lag ~10s (collector
+    // sample window), so say "applied" explicitly rather than wait for the dB to move.
+    status('master gain '+(payload.gain!=null?payload.gain:g)+' applied at receiver (meters update in ~10s)', 'ok');
     tick();
   }catch(e){ status('master gain failed: '+e.message, 'dead'); }
 });

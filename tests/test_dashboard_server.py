@@ -203,6 +203,23 @@ class DashboardServerTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(self.commands[0], ["systemctl", "--user", "stop", "jam.target"])
 
+    def test_post_clear_empties_roster(self):
+        payload = self._post("/api/clear")
+        self.assertTrue(payload["ok"])
+        self.assertIn("--clear", self.commands[0])
+        self.assertIn("chuck_send.py", self.commands[0][1])
+
+    def test_recall_clears_before_loading(self):
+        # #2456: Recall must CLEAR then load, so a new song replaces the old one.
+        (self.compositions_dir / "cm7.json").write_text(json.dumps({
+            "name": "cm7", "transport": {"bpm": 60, "bars": 96},
+            "voices": [{"agent": "a", "instrument": "sine", "notes": "60,0.2,0,480"}],
+        }), encoding="utf-8")
+        self._post("/api/compositions/cm7/recall")
+        # First command must be the clear (--clear), THEN play_composition.
+        self.assertIn("--clear", self.commands[0])
+        self.assertIn("play_composition.py", self.commands[1][1])
+
     # --- parametric voice (#2449) ---
 
     _SYNTH = {"waveform": "saw", "gain": 0.8, "pan": 0.0,
@@ -356,8 +373,10 @@ class DashboardServerTest(unittest.TestCase):
             thread.join(timeout=5)
             httpd.server_close()
         self.assertTrue(payload["ok"])
-        self.assertIn("play_composition.py", self.commands[0][1])
-        self.assertEqual(Path(self.commands[0][2]).name, "cm7.json")
+        # Recall clears first (#2456), so play_composition is the SECOND command.
+        self.assertIn("--clear", self.commands[0])
+        self.assertIn("play_composition.py", self.commands[1][1])
+        self.assertEqual(Path(self.commands[1][2]).name, "cm7.json")
 
     def test_post_transport_stop_runs_chuck_send(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)

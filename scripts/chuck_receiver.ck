@@ -891,6 +891,30 @@ fun void handleStop() {
     <<< "[chuck_receiver] STOP: transport gen", transport_gen >>>;
 }
 
+// -- Handle /clear message (#2456 roster reclamation) -----------------
+// Format: /clear. Stops the transport AND empties the roster so the next
+// composition REPLACES rather than stacks. Without this, Recall loads a new
+// song's agents alongside the old one's (different agent names never overwrite
+// each other's slots) and both play at once (Gregory 2026-06-09). Bumps
+// transport_gen first (halt the clock), then zeroes phrase_count and clears the
+// per-agent voice/pan caches so a fresh song starts from true silence.
+fun void handleClear() {
+    1 +=> transport_gen;
+    0 => phrase_count;
+    pan_override.clear();
+    pan_isset.clear();
+    voice_wave.clear();
+    voice_gain.clear();
+    voice_pan.clear();
+    voice_atk.clear();
+    voice_dec.clear();
+    voice_sus.clear();
+    voice_rel.clear();
+    voice_detune.clear();
+    voice_isset.clear();
+    <<< "[chuck_receiver] CLEAR: roster emptied, transport gen", transport_gen >>>;
+}
+
 // ── Main loop ───────────────────────────────────────────────────────
 // -- Handle /dubfx message --------------------------------------------
 // Format: /dubfx wet(f). Sets reverb/delay send depth (0=dry..1=wet).
@@ -980,6 +1004,8 @@ while (true) {
             handleMasterGain();
         } else if (msg.address == "/voice") {
             handleVoice();
+        } else if (msg.address == "/clear") {
+            handleClear();
         } else {
             <<< "[chuck_receiver] Unknown OSC address:", msg.address >>>;
         }

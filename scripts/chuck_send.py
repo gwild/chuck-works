@@ -89,6 +89,12 @@ def build_stop_message():
     return osc_string("/stop") + osc_string(",")
 
 
+def build_clear_message():
+    """Build OSC /clear message — empty the receiver roster (#2456) so the next
+    composition REPLACES rather than stacks on the current one."""
+    return osc_string("/clear") + osc_string(",")
+
+
 def build_master_gain_message(gain):
     """Build OSC /master_gain message."""
     return osc_string("/master_gain") + osc_string(",f") + osc_float(gain)
@@ -151,6 +157,8 @@ def main():
     parser.add_argument("--notes", help="Notes: pitch,vel,start_tick,dur_ticks;...")
     parser.add_argument("--start", action="store_true", help="Send /start message")
     parser.add_argument("--stop", action="store_true", help="Send /stop message")
+    parser.add_argument("--clear", action="store_true",
+                        help="Send /clear: empty the receiver roster so the next song replaces it")
     parser.add_argument("--bpm", type=float, default=120.0, help="BPM for /start")
     parser.add_argument("--bars", type=int, default=8, help="Number of bars")
     parser.add_argument("--countin", type=int, default=0, help="Count-in ticks")
@@ -174,9 +182,9 @@ def main():
     parser.add_argument("--detune", type=float, default=0.0, help="/voice detune cents (-1200..+1200)")
     args = parser.parse_args()
 
-    global_commands = int(args.start) + int(args.stop) + int(args.master_gain is not None)
+    global_commands = int(args.start) + int(args.stop) + int(args.clear) + int(args.master_gain is not None)
     if global_commands > 1:
-        print("--start, --stop, and --master-gain are global controls; send one per invocation", file=sys.stderr)
+        print("--start, --stop, --clear, and --master-gain are global controls; send one per invocation", file=sys.stderr)
         sys.exit(1)
     if global_commands and (args.pan is not None or args.notes or args.voice):
         print("global controls cannot combine with --pan, --voice, or --notes; send them separately", file=sys.stderr)
@@ -232,6 +240,9 @@ def main():
     elif args.stop:
         send_osc(build_stop_message(), args.host, args.port)
         print("Sent /stop")
+    elif args.clear:
+        send_osc(build_clear_message(), args.host, args.port)
+        print("Sent /clear")
     elif args.master_gain is not None:
         if args.master_gain < 0.0 or args.master_gain > 1.0:
             print("--master-gain must be between 0 and 1", file=sys.stderr)

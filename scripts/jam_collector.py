@@ -55,6 +55,9 @@ def _env(name, default):
 SERVICES_DIR = _env("JAM_SERVICES_DIR", os.path.join(HOME, "milton-services"))
 STATE_FILE = _env("STATE_FILE", os.path.join(SERVICES_DIR, "data", "jam-state.json"))
 RECEIVER_LOG = _env("JAM_RECEIVER_LOG", os.path.join(SERVICES_DIR, "logs", "chuck_receiver.log"))
+RECEIVER_SOURCE = _env("JAM_RECEIVER_SOURCE", "journal")
+RECEIVER_JOURNAL_UNIT = _env("JAM_RECEIVER_JOURNAL_UNIT", "chuck-receiver.service")
+RECEIVER_JOURNAL_LINES = int(_env("JAM_RECEIVER_JOURNAL_LINES", "4000"))
 GMIXER_LOG = _env("JAM_GMIXER_LOG", "/tmp/gmixer_debug.log")
 ICECAST_HOST = _env("JAM_ICECAST_HOST", "127.0.0.1:8080")
 JACK_PORTS = _env("JAM_JACK_PORTS", "ChucK:outport 0,ChucK:outport 1").split(",")
@@ -113,7 +116,34 @@ def _last_float(line):
         return None
 
 
-# ── INTENT: parse the receiver log (until #2442 writes a status json). ──
+def _receiver_file_lines():
+    mtime = int(os.path.getmtime(RECEIVER_LOG))
+    with open(RECEIVER_LOG, "r", errors="replace") as fh:
+        return mtime, fh.readlines()[-4000:]
+
+
+def _receiver_journal_lines():
+    cmd = [
+        "journalctl", "--user", "-u", RECEIVER_JOURNAL_UNIT,
+        "-n", str(RECEIVER_JOURNAL_LINES), "--no-pager", "-o", "cat",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"journalctl failed for {RECEIVER_JOURNAL_UNIT}: {result.stderr.strip()}"
+        )
+    return int(time.time()), result.stdout.splitlines()
+
+
+def _receiver_lines():
+    if RECEIVER_SOURCE == "file":
+        return "receiver_log", *_receiver_file_lines()
+    if RECEIVER_SOURCE == "journal":
+        return "receiver_journal", *_receiver_journal_lines()
+    raise ValueError(f"unsupported JAM_RECEIVER_SOURCE={RECEIVER_SOURCE!r}")
+
+
+# ── INTENT: parse receiver events (journal by default; file for legacy/tests). ──
 def read_intent():
     """What the jam is *supposed* to be, from the receiver's own log.
 
@@ -125,16 +155,19 @@ def read_intent():
     """
     intent = {
         "transport_running": False, "bpm": None, "tpb": None, "bars": None,
-        "roster": [], "roster_count": 0, "lanes": [], "source": "receiver_log",
+        "roster": [], "roster_count": 0, "lanes": [], "source": RECEIVER_SOURCE,
         "log_mtime_unix": None, "last_phrase_age_secs": None,
         "cycle_secs": None,
     }
-    try:
-        intent["log_mtime_unix"] = int(os.path.getmtime(RECEIVER_LOG))
-        with open(RECEIVER_LOG, "r", errors="replace") as fh:
-            lines = fh.readlines()[-4000:]
-    except OSError:
-        return intent
+    if RECEIVER_SOURCE == "file":
+        try:
+            source, mtime, lines = _receiver_lines()
+        except OSError:
+            return intent
+    else:
+        source, mtime, lines = _receiver_lines()
+    intent["source"] = source
+    intent["log_mtime_unix"] = mtime
 
     last_start_idx = None
     last_stop_idx = None

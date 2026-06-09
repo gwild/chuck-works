@@ -51,21 +51,54 @@ from chuck_send import (  # noqa: E402
     BEELINK_IP,
     OSC_PORT,
     TICKS_PER_BEAT,
+    VOICE_WAVEFORMS,
     build_load_message,
     build_pan_message,
     build_start_message,
+    build_voice_message,
     parse_notes,
     send_osc,
 )
 
 _REQUIRED_TOP = ("name", "transport", "voices")
 _REQUIRED_VOICE = ("agent", "instrument", "notes")
-_ALLOWED_VOICE = {"agent", "instrument", "notes", "revision", "pan"}
+_ALLOWED_VOICE = {"agent", "instrument", "notes", "revision", "pan", "synth"}
 
 
 def _die(msg: str) -> None:
     print(f"play_composition: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def _validate_synth(v: dict, i: int) -> None:
+    """Validate an optional per-voice `synth` parametric-voice spec (#2449).
+    Fail loud before any send — same contract as the rest of the manifest.
+    Shape: {waveform, gain, pan, adsr:{a,d,s,r}, detune?}. waveform/gain/pan/adsr
+    are required when synth is present; detune is an optional score semantic
+    (sent as 0 when absent, like revision/countin — not a config value)."""
+    s = v["synth"]
+    label = v["agent"] if "agent" in v else "?"
+    if not isinstance(s, dict):
+        _die(f"voice[{i}] ({label}) synth must be an object")
+    for k in ("waveform", "gain", "pan", "adsr"):
+        if k not in s:
+            _die(f"voice[{i}] ({label}) synth missing key: {k!r}")
+    if s["waveform"] not in VOICE_WAVEFORMS:
+        _die(f"voice[{i}] ({label}) synth.waveform must be one of {sorted(VOICE_WAVEFORMS)}")
+    if not (0.0 <= float(s["gain"]) <= 1.0):
+        _die(f"voice[{i}] ({label}) synth.gain out of range [0,1]")
+    if not (-1.0 <= float(s["pan"]) <= 1.0):
+        _die(f"voice[{i}] ({label}) synth.pan out of range [-1,1]")
+    adsr = s["adsr"]
+    if not isinstance(adsr, dict) or not all(k in adsr for k in ("a", "d", "s", "r")):
+        _die(f"voice[{i}] ({label}) synth.adsr must have a,d,s,r")
+    for k in ("a", "d", "r"):
+        if not (0.0 <= float(adsr[k]) <= 5.0):
+            _die(f"voice[{i}] ({label}) synth.adsr.{k} out of range [0,5] seconds")
+    if not (0.0 <= float(adsr["s"]) <= 1.0):
+        _die(f"voice[{i}] ({label}) synth.adsr.s (sustain) out of range [0,1]")
+    if "detune" in s and not (-1200.0 <= float(s["detune"]) <= 1200.0):
+        _die(f"voice[{i}] ({label}) synth.detune out of range [-1200,1200] cents")
 
 
 def load_manifest(path: Path) -> dict:
@@ -110,6 +143,8 @@ def load_manifest(path: Path) -> dict:
             _die(f"voice[{i}] ({v['agent']}) notes failed to parse: {e}")
         if "pan" in v and not (-1.0 <= float(v["pan"]) <= 1.0):
             _die(f"voice[{i}] ({v['agent']}) pan out of range [-1,1]: {v['pan']}")
+        if "synth" in v:
+            _validate_synth(v, i)
     return data
 
 
@@ -124,6 +159,14 @@ def play(manifest: dict, host: str, port: int, settle: float) -> None:
     print(f"/start bpm={bpm} bars={bars} countin={countin}")
     for v in manifest["voices"]:
         agent = v["agent"]
+        if "synth" in v:
+            s = v["synth"]
+            adsr = s["adsr"]
+            detune = float(s["detune"]) if "detune" in s else 0.0
+            send_osc(build_voice_message(agent, s["waveform"], float(s["gain"]), float(s["pan"]),
+                                         float(adsr["a"]), float(adsr["d"]), float(adsr["s"]),
+                                         float(adsr["r"]), detune), host, port)
+            print(f"/voice {agent} {s['waveform']} gain={s['gain']} adsr={adsr['a']},{adsr['d']},{adsr['s']},{adsr['r']}")
         if "pan" in v:
             send_osc(build_pan_message(agent, float(v["pan"])), host, port)
             print(f"/pan {agent} {v['pan']}")

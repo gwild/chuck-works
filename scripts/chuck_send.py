@@ -125,6 +125,24 @@ def build_pan_message(agent, pos):
     return osc_string("/pan") + osc_string(",sf") + osc_string(agent) + struct.pack(">f", float(pos))
 
 
+# Waveforms the parametric voice supports — must match chuck_receiver.ck handleVoice.
+VOICE_WAVEFORMS = ("sine", "saw", "tri", "square")
+
+
+def build_voice_message(agent, waveform, gain, pan, attack, decay, sustain, release, detune=0.0):
+    """Build /voice — per-agent PARAMETRIC voice spec (the modular signal-insert
+    template, #2449). Mirrors build_pan_message but carries a whole oscillator+
+    envelope spec the receiver builds the chain from, instead of a hardcoded
+    instrument preset. Fixed-width tag (detune always sent, default 0.0) so the
+    receiver parses positionally with no optional-arg logic. The receiver clamps
+    every field; an agent never /voice'd keeps its instrument-name behavior."""
+    data = osc_string(agent) + osc_string(waveform)
+    data += osc_float(gain) + osc_float(pan)
+    data += osc_float(attack) + osc_float(decay) + osc_float(sustain) + osc_float(release)
+    data += osc_float(detune)
+    return osc_string("/voice") + osc_string(",ssfffffff") + data
+
+
 def main():
     parser = argparse.ArgumentParser(description="Send ChucK OSC messages to beelink")
     parser.add_argument("--agent", help="Agent name (e.g. claude)")
@@ -143,15 +161,58 @@ def main():
                              "(hand-rolled OSC was the only path before)")
     parser.add_argument("--master-gain", type=float, default=None,
                         help="Send /master_gain: shared output gain 0..1")
+    parser.add_argument("--voice", action="store_true",
+                        help="Send /voice for --agent: parametric oscillator voice "
+                             "(waveform + gain/pan + ADSR + detune). Pairs with --notes.")
+    parser.add_argument("--waveform", default="sine", help="/voice waveform: " + "|".join(VOICE_WAVEFORMS))
+    parser.add_argument("--voice-gain", type=float, default=0.8, help="/voice gain 0..1")
+    parser.add_argument("--voice-pan", type=float, default=0.0, help="/voice pan -1..+1")
+    parser.add_argument("--attack", type=float, default=0.01, help="/voice ADSR attack seconds (>=0, <=5)")
+    parser.add_argument("--decay", type=float, default=0.1, help="/voice ADSR decay seconds (>=0, <=5)")
+    parser.add_argument("--sustain", type=float, default=0.7, help="/voice ADSR sustain level 0..1")
+    parser.add_argument("--release", type=float, default=0.3, help="/voice ADSR release seconds (>=0, <=5)")
+    parser.add_argument("--detune", type=float, default=0.0, help="/voice detune cents (-1200..+1200)")
     args = parser.parse_args()
 
     global_commands = int(args.start) + int(args.stop) + int(args.master_gain is not None)
     if global_commands > 1:
         print("--start, --stop, and --master-gain are global controls; send one per invocation", file=sys.stderr)
         sys.exit(1)
-    if global_commands and (args.pan is not None or args.notes):
-        print("global controls cannot combine with --pan or --notes; send them separately", file=sys.stderr)
+    if global_commands and (args.pan is not None or args.notes or args.voice):
+        print("global controls cannot combine with --pan, --voice, or --notes; send them separately", file=sys.stderr)
         sys.exit(1)
+
+    if args.voice:
+        if not args.agent:
+            print("--voice requires --agent", file=sys.stderr)
+            sys.exit(1)
+        if args.waveform not in VOICE_WAVEFORMS:
+            print(f"--waveform must be one of {VOICE_WAVEFORMS}", file=sys.stderr)
+            sys.exit(1)
+        if not (0.0 <= args.voice_gain <= 1.0):
+            print("--voice-gain must be between 0 and 1", file=sys.stderr)
+            sys.exit(1)
+        if not (-1.0 <= args.voice_pan <= 1.0):
+            print("--voice-pan must be between -1 and 1", file=sys.stderr)
+            sys.exit(1)
+        for _name, _v in (("--attack", args.attack), ("--decay", args.decay), ("--release", args.release)):
+            if not (0.0 <= _v <= 5.0):
+                print(f"{_name} must be between 0 and 5 seconds", file=sys.stderr)
+                sys.exit(1)
+        if not (0.0 <= args.sustain <= 1.0):
+            print("--sustain must be between 0 and 1", file=sys.stderr)
+            sys.exit(1)
+        if not (-1200.0 <= args.detune <= 1200.0):
+            print("--detune must be between -1200 and 1200 cents", file=sys.stderr)
+            sys.exit(1)
+        send_osc(build_voice_message(args.agent, args.waveform, args.voice_gain, args.voice_pan,
+                                     args.attack, args.decay, args.sustain, args.release, args.detune),
+                 args.host, args.port)
+        print(f"Sent /voice: agent={args.agent} wave={args.waveform} gain={args.voice_gain} "
+              f"pan={args.voice_pan} adsr={args.attack},{args.decay},{args.sustain},{args.release} "
+              f"detune={args.detune}")
+        # Deliberately NO return: --voice combined with --notes sends BOTH
+        # (/voice then /load), same no-silent-drop contract as --pan below.
 
     if args.pan is not None:
         if not args.agent:
@@ -184,6 +245,8 @@ def main():
         print(f"Sent /load: agent={args.agent} instrument={args.instrument} rev={args.revision} notes={len(notes)}")
     elif args.pan is not None:
         pass  # --pan alone already sent above
+    elif args.voice:
+        pass  # --voice alone already sent above
     else:
         parser.print_help()
         sys.exit(1)

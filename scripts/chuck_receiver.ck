@@ -45,6 +45,27 @@ fun float panForAgent(string a) {
     return -2.0;  // sentinel: caller falls back to the pitch formula
 }
 
+// ── Parametric voice (OSC /voice, #2449) ────────────────────────────
+// The modular SIGNAL-INSERT template: a per-agent parametric oscillator voice
+// (waveform + gain/pan + ADSR + detune) that playNote builds the chain FROM,
+// instead of a hardcoded instrument preset. Parallel typed maps + an isset
+// flag, exactly like pan_override — ChucK has no map-of-struct. An agent with
+// voice_isset==0 keeps its instrument-name behavior UNCHANGED (zero regression
+// to existing compositions). /voice writes ONLY these maps — never phrases[]/
+// revision/slots — so it cannot exhaust the 32-slot roster or be rev-guarded
+// (timbre tweaks apply immediately; see handleVoice). This is the seam the
+// next templates (filter, FX, mod-matrix) extend: each adds its own *_isset
+// map and inserts into the chain built in playNote's parametric branch.
+string voice_wave[0];
+float  voice_gain[0];
+float  voice_pan[0];
+float  voice_atk[0];
+float  voice_dec[0];
+float  voice_sus[0];
+float  voice_rel[0];
+float  voice_detune[0];
+int    voice_isset[0];
+
 // Shared master gain for all voices — prevents clipping.
 // 0.85 matches the live beelink mix reference (Claude's on-host hot-patch,
 // approved by Gregory 2026-06-06; Locke's "hold the output chain steady" in
@@ -80,13 +101,69 @@ fun float midiToFreq(int note) {
 
 // ── Play a single note with envelope ────────────────────────────────
 // Uses ADSR for clean attack/release. UGen chain is fully disconnected after.
-fun void playNote(string instrument, int pitch, float velocity, dur length, float panpos) {
+// `agent` selects the per-agent parametric voice cache (OSC /voice, #2449); if
+// that agent has no /voice spec, falls through to the instrument-name dispatch
+// below UNCHANGED. The parametric branch is the chain-assembly SEAM: later
+// signal-insert templates (filter, FX, mod-matrix) splice into the chain here,
+// each gated by its own *_isset[agent] map.
+fun void playNote(string agent, string instrument, int pitch, float velocity, dur length, float panpos) {
     // Build UGen chain: oscillator → envelope → pan → master
     SinOsc osc; // default
     // Resolve pan: explicit /pan override (>= -1.5), else the pitch spread.
     float panval;
     if (panpos < -1.5) (Math.sin(pitch * 0.1) * 0.3) => panval;
     else panpos => panval;
+
+    // ── Parametric voice branch (OSC /voice). Builds the whole chain from the
+    // per-agent cache. Explicit /pan still wins (panval already resolved above).
+    if (voice_isset[agent] != 0) {
+        midiToFreq(pitch) * Math.pow(2.0, voice_detune[agent] / 1200.0) => float vf;
+        voice_atk[agent]::second => dur vatk;
+        voice_dec[agent]::second => dur vdec;
+        voice_rel[agent]::second => dur vrel;
+        // Each waveform declares its concrete UGen, then runs the identical
+        // ADSR/Pan/teardown body (ChucK can't hold a polymorphic Osc ref).
+        if (voice_wave[agent] == "saw") {
+            SawOsc o; vf => o.freq;
+            o => ADSR env => Pan2 pan => master;
+            velocity * voice_gain[agent] => env.gain;
+            voice_pan[agent] => pan.pan;
+            env.set(vatk, vdec, voice_sus[agent], vrel);
+            env.keyOn(); length => now; env.keyOff(); vrel => now;
+            o =< env; env =< pan; pan =< master;
+            return;
+        }
+        if (voice_wave[agent] == "tri") {
+            TriOsc o; vf => o.freq;
+            o => ADSR env => Pan2 pan => master;
+            velocity * voice_gain[agent] => env.gain;
+            voice_pan[agent] => pan.pan;
+            env.set(vatk, vdec, voice_sus[agent], vrel);
+            env.keyOn(); length => now; env.keyOff(); vrel => now;
+            o =< env; env =< pan; pan =< master;
+            return;
+        }
+        if (voice_wave[agent] == "square") {
+            SqrOsc o; vf => o.freq;
+            o => ADSR env => Pan2 pan => master;
+            velocity * voice_gain[agent] => env.gain;
+            voice_pan[agent] => pan.pan;
+            env.set(vatk, vdec, voice_sus[agent], vrel);
+            env.keyOn(); length => now; env.keyOff(); vrel => now;
+            o =< env; env =< pan; pan =< master;
+            return;
+        }
+        // default + "sine"
+        SinOsc o; vf => o.freq;
+        o => ADSR env => Pan2 pan => master;
+        velocity * voice_gain[agent] => env.gain;
+        voice_pan[agent] => pan.pan;
+        env.set(vatk, vdec, voice_sus[agent], vrel);
+        env.keyOn(); length => now; env.keyOff(); vrel => now;
+        o =< env; env =< pan; pan =< master;
+        return;
+    }
+
     if (instrument == "saw" || instrument == "SawOsc") {
         SawOsc s;
         midiToFreq(pitch) => s.freq;
@@ -677,7 +754,7 @@ fun void playPhrase(AgentPhrase @ p, time start_time, dur piece_dur) {
             if (note_start > now) {
                 note_start => now;
             }
-            spork ~ playNote(inst, note.pitch, note.velocity, note.dur_ticks * tick_dur, panForAgent(p.agent));
+            spork ~ playNote(p.agent, inst, note.pitch, note.velocity, note.dur_ticks * tick_dur, panForAgent(p.agent));
         }
         // Advance to end of this phrase iteration
         loop_start + phrase_dur => loop_start;
@@ -849,6 +926,41 @@ fun void handleMasterGain() {
     <<< "[chuck_receiver] MASTER_GAIN", gain >>>;
 }
 
+// -- Handle /voice message (#2449) ------------------------------------
+// Format: /voice agent(s) waveform(s) gain(f) pan(f) attack(f) decay(f)
+//                sustain(f) release(f) detune(f). Caches a per-agent
+// parametric voice that playNote builds the chain from. Every field clamped
+// (mirror handleMasterGain); unknown waveform → loud log + documented `sine`
+// default (NOT a silent fallback). NOT rev-guarded and does NOT touch the
+// phrases[]/slot roster — a timbre tweak applies immediately and can never
+// exhaust the 32-slot cap. Asymmetry vs /load (which IS rev-guarded) is
+// intentional: phrases supersede by revision; voice is live state.
+fun void handleVoice() {
+    msg.getString(0) => string a;
+    msg.getString(1) => string w;
+    msg.getFloat(2) => float g;   if (g < 0.0) 0.0 => g; if (g > 1.0) 1.0 => g;
+    msg.getFloat(3) => float p;   if (p < -1.0) -1.0 => p; if (p > 1.0) 1.0 => p;
+    msg.getFloat(4) => float atk; if (atk < 0.0) 0.0 => atk; if (atk > 5.0) 5.0 => atk;
+    msg.getFloat(5) => float dec; if (dec < 0.0) 0.0 => dec; if (dec > 5.0) 5.0 => dec;
+    msg.getFloat(6) => float sus; if (sus < 0.0) 0.0 => sus; if (sus > 1.0) 1.0 => sus;
+    msg.getFloat(7) => float rel; if (rel < 0.0) 0.0 => rel; if (rel > 5.0) 5.0 => rel;
+    msg.getFloat(8) => float det; if (det < -1200.0) -1200.0 => det; if (det > 1200.0) 1200.0 => det;
+    if (w != "sine" && w != "saw" && w != "tri" && w != "square") {
+        <<< "[chuck_receiver] /voice unknown waveform", w, "-> default sine for", a >>>;
+        "sine" => w;
+    }
+    w => voice_wave[a];
+    g => voice_gain[a];
+    p => voice_pan[a];
+    atk => voice_atk[a];
+    dec => voice_dec[a];
+    sus => voice_sus[a];
+    rel => voice_rel[a];
+    det => voice_detune[a];
+    1 => voice_isset[a];
+    <<< "[chuck_receiver] VOICE", a, w, "gain", g, "adsr", atk, dec, sus, rel, "detune", det >>>;
+}
+
 <<< "[chuck_receiver] Listening on OSC port", OSC_PORT >>>;
 
 while (true) {
@@ -866,6 +978,8 @@ while (true) {
             handlePan();
         } else if (msg.address == "/master_gain") {
             handleMasterGain();
+        } else if (msg.address == "/voice") {
+            handleVoice();
         } else {
             <<< "[chuck_receiver] Unknown OSC address:", msg.address >>>;
         }

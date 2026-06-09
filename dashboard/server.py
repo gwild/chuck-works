@@ -27,6 +27,9 @@ Endpoints:
                     -> call scripts/chuck_send.py --start
   POST /api/transport/stop
                     -> call scripts/chuck_send.py --stop
+  POST /api/launch  -> systemctl --user start jam.target (bring up the whole
+                       audio chain: jackd -> ChucK -> GStreamer -> Icecast)
+  POST /api/shutdown -> systemctl --user stop jam.target (tear the chain down)
   POST /api/gain/master
                     -> call scripts/chuck_send.py --master-gain
   POST /api/compositions/<name>/recall
@@ -60,6 +63,12 @@ PORT = int(os.environ.get("PORT", "8092"))
 TITLE = os.environ.get("TITLE", "chuck-works")
 STALE_SECS = float(os.environ.get("STALE_SECS", "30"))
 PYTHON = os.environ.get("PYTHON", sys.executable)
+# Linear-RMS floor below which a tap counts as silent (~ -60 dB, just under the
+# renderer's -55 dB "dead" floor). Green readiness requires audio above this on
+# both the ChucK/JACK tap and the /jam.mp3 mount, so a connected-but-silent
+# stream reads YELLOW, never green.
+JAM_SILENCE_RMS = float(os.environ.get("JAM_SILENCE_RMS", "0.001"))
+JAM_MOUNT = os.environ.get("JAM_MOUNT", "/jam.mp3")
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -222,6 +231,75 @@ def recall_composition(name):
     return {"ok": True, "name": name, "stdout": result.stdout.strip()}
 
 
+def launch_chain():
+    """Bring up the whole audio chain (jackd -> ChucK -> GStreamer -> Icecast)
+    via systemd. jam.target orders jackd-dummy.service, chuck-receiver.service
+    and gststream-cw.service; systemd owns supervision and restart."""
+    result = run_command(["systemctl", "--user", "start", "jam.target"])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"systemctl start exited {result.returncode}")
+    return {"ok": True, "stdout": result.stdout.strip()}
+
+
+def shutdown_chain():
+    """Tear the whole audio chain down. PartOf= on the member units makes
+    stopping jam.target cascade to all three."""
+    result = run_command(["systemctl", "--user", "stop", "jam.target"])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"systemctl stop exited {result.returncode}")
+    return {"ok": True, "stdout": result.stdout.strip()}
+
+
+def _signal_rms(node):
+    """Linear RMS from a reality tap if it is a real, finite, positive number,
+    else None. A tap can report ok:true with rms:NaN (jack_rec produced an
+    empty wav) — that is NOT a live signal, so non-finite reads as 'no signal'."""
+    if not isinstance(node, dict):
+        return None
+    rms = node.get("rms")
+    if not isinstance(rms, (int, float)) or isinstance(rms, bool):
+        return None
+    if rms != rms or rms in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    return float(rms)
+
+
+def compute_ready(state, age_secs, stale):
+    """Map collector state -> {"level": "green"|"yellow"|"red", "reasons": [...]}.
+
+    Pure (no I/O) so it is unit-testable. Drives the GUI readiness dot. Green
+    means the FULL chain is carrying real audio end-to-end; a connected-but-
+    silent stream reads YELLOW, never green (the failure mode we keep hitting).
+    """
+    reasons = []
+    if stale:
+        reasons.append("state is stale (collector down or frozen)")
+        return {"level": "red", "reasons": reasons}
+    if not isinstance(state, dict) or state.get("_error"):
+        reasons.append(state.get("_error") if isinstance(state, dict) else "no state")
+        return {"level": "red", "reasons": reasons}
+
+    reality = state.get("reality") or {}
+    jack_rms = _signal_rms(reality.get("jack"))
+    if jack_rms is None:
+        reasons.append("ChucK/JACK has no live signal (jackd or receiver down)")
+        return {"level": "red", "reasons": reasons}
+    if jack_rms < JAM_SILENCE_RMS:
+        reasons.append(f"ChucK is silent (jack rms {jack_rms:.5f} < {JAM_SILENCE_RMS})")
+
+    mounts = reality.get("mount") or []
+    jam = next((m for m in mounts if isinstance(m, dict) and m.get("mount") == JAM_MOUNT), None)
+    mount_rms = _signal_rms(jam)
+    if mount_rms is None:
+        reasons.append(f"{JAM_MOUNT} not streaming (GStreamer/Icecast not carrying audio)")
+    elif mount_rms < JAM_SILENCE_RMS:
+        reasons.append(f"{JAM_MOUNT} is silent (mount rms {mount_rms:.5f} < {JAM_SILENCE_RMS})")
+
+    if jack_rms >= JAM_SILENCE_RMS and mount_rms is not None and mount_rms >= JAM_SILENCE_RMS:
+        return {"level": "green", "reasons": ["full chain carrying audio"]}
+    return {"level": "yellow", "reasons": reasons or ["chain partially up"]}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -239,6 +317,7 @@ class Handler(BaseHTTPRequestHandler):
             envelope = dict(state)
             envelope["_age_secs"] = round(age, 1) if age is not None else None
             envelope["_stale"] = stale
+            envelope["_ready"] = compute_ready(state, age, stale)
             self._send(200, dump_json(envelope), "application/json")
             return
         if path in ("/api/compositions", "/api/compositions/"):
@@ -267,6 +346,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/transport/stop":
                 self._send(200, dump_json(stop_transport()), "application/json")
+                return
+            if path == "/api/launch":
+                self._send(200, dump_json(launch_chain()), "application/json")
+                return
+            if path == "/api/shutdown":
+                self._send(200, dump_json(shutdown_chain()), "application/json")
                 return
             if path == "/api/gain/master":
                 self._send(200, dump_json(set_master_gain(read_json_body(self))), "application/json")
